@@ -1,0 +1,19 @@
+{
+  "name": "@omnisync/store",
+  "version": "0.1.0",
+  "description": "Durable update log, snapshot metadata and object storage for the gateway",
+  "license": "UNLICENSED",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./testing": { "types": "./dist/testing.d.ts", "default": "./dist/testing.js" }
+  },
+  "files": ["dist", "migrations"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": { "pg": "^8.23.1" },
+  "devDependencies": { "@omnisync/config": "workspace:*", "@types/pg": "^8.23.1" }
+}

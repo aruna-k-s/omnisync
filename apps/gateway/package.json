@@ -4,7 +4,12 @@
   "private": true,
   "description": "Phase 0 sync gateway prototype: verifies signed updates and relays them between clients",
   "type": "module",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
@@ -16,7 +21,13 @@
     "@omnisync/engine": "workspace:*",
     "@omnisync/protocol": "workspace:*",
     "ws": "^8.22.0",
-    "yjs": "^13.6.33"
+    "yjs": "^13.6.33",
+    "@omnisync/store": "workspace:*"
   },
-  "devDependencies": { "@omnisync/config": "workspace:*", "@types/ws": "^8.18.2" }
+  "devDependencies": {
+    "@omnisync/config": "workspace:*",
+    "@types/ws": "^8.18.2",
+    "pg": "^8.23.1",
+    "@types/pg": "^8.23.1"
+  }
 }

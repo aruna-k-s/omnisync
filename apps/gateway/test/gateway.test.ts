@@ -81,11 +81,21 @@ for (const engine of Object.keys(engines) as (keyof typeof engines)[]) {
       expect(gateway.textOf("doc-1")).toBe("");
     });
 
-    it("rejects replayed frames", async () => {
+    it("acknowledges an exact retry once without applying it twice", async () => {
       const a = await connect(1);
       const frame = signUpdate({ docId: "doc-1", sessionId: 9, seq: 1, payload: a.doc.insertText(0, "once") }, alice);
       a.sendRaw(frame);
       a.sendRaw(frame);
+      await until(() => gateway.stats.duplicates === 1);
+      expect(gateway.stats.accepted).toBe(1);
+      expect(gateway.textOf("doc-1")).toBe("once");
+      expect(a.errors).toEqual([]);
+    });
+
+    it("rejects an old client seq that was never stored", async () => {
+      const a = await connect(1);
+      a.sendRaw(signUpdate({ docId: "doc-1", sessionId: 9, seq: 5, payload: a.doc.insertText(0, "x") }, alice));
+      a.sendRaw(signUpdate({ docId: "doc-1", sessionId: 9, seq: 3, payload: a.doc.insertText(0, "y") }, alice));
       await until(() => a.errors.includes("replay"));
       expect(gateway.stats.accepted).toBe(1);
     });

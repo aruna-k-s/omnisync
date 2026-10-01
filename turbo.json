@@ -17,6 +17,10 @@
     "test": {
       "dependsOn": [
         "^build"
+      ],
+      "env": [
+        "OMNISYNC_TEST_DATABASE_URL",
+        "STORM_CLIENTS"
       ]
     }
   },

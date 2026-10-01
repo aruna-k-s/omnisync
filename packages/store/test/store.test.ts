@@ -1,0 +1,168 @@
+import { randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import pg from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  FsObjectStore,
+  MemoryDocumentStore,
+  MemoryObjectStore,
+  PgDocumentStore,
+  StoreUnavailableError,
+  migrate,
+  snapshotObjectKey,
+} from "../src/index.js";
+import { FaultyDocumentStore } from "../src/testing.js";
+import { documentStoreContract, upd } from "./contract.js";
+
+documentStoreContract("memory", async () => new MemoryDocumentStore());
+
+describe("object stores", () => {
+  const bytes = new Uint8Array([1, 2, 3]);
+
+  it("memory store round-trips and reports missing objects", async () => {
+    const o = new MemoryObjectStore();
+    await o.put("a/b", bytes);
+    expect([...((await o.get("a/b")) ?? [])]).toEqual([1, 2, 3]);
+    expect(await o.get("nope")).toBeUndefined();
+    await o.delete("a/b");
+    expect(await o.get("a/b")).toBeUndefined();
+  });
+
+  it("filesystem store round-trips, overwrites atomically and refuses path escapes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "omnisync-fs-"));
+    try {
+      const o = new FsObjectStore(dir);
+      await o.put("snapshots/x/1.bin", bytes);
+      await o.put("snapshots/x/1.bin", new Uint8Array([9]));
+      expect([...((await o.get("snapshots/x/1.bin")) ?? [])]).toEqual([9]);
+      expect(await o.get("snapshots/x/missing.bin")).toBeUndefined();
+      await expect(o.put("../escape", bytes)).rejects.toThrow(/escapes root/);
+      await o.delete("snapshots/x/1.bin");
+      expect(await o.get("snapshots/x/1.bin")).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("snapshot keys are stable, content-addressed and path-safe", () => {
+    const k = snapshotObjectKey("../../evil/doc", 42, "ab".repeat(32));
+    expect(k).toBe(snapshotObjectKey("../../evil/doc", 42, "ab".repeat(32)));
+    expect(k).not.toContain("..");
+    expect(k).toMatch(/^snapshots\/[0-9a-f]+\/000000000042-abababababababab\.bin$/);
+  });
+});
+
+describe("FaultyDocumentStore", () => {
+  it("fails on demand with StoreUnavailableError, then recovers", async () => {
+    const f = new FaultyDocumentStore(new MemoryDocumentStore());
+    f.failNext = 1;
+    await expect(f.appendUpdates("d", [upd(1)])).rejects.toBeInstanceOf(StoreUnavailableError);
+    await expect(f.appendUpdates("d", [upd(1)])).resolves.toHaveLength(1);
+    f.down = true;
+    await expect(f.ping()).rejects.toBeInstanceOf(StoreUnavailableError);
+  });
+});
+
+const url = process.env.OMNISYNC_TEST_DATABASE_URL;
+
+describe.skipIf(!url)("PostgreSQL store", () => {
+  const schema = `t_${randomBytes(5).toString("hex")}`;
+  let admin: pg.Pool;
+  const stores: PgDocumentStore[] = [];
+  const open = () => {
+    const s = new PgDocumentStore({ connectionString: url as string, schema });
+    stores.push(s);
+    return s;
+  };
+
+  beforeAll(async () => {
+    admin = new pg.Pool({ connectionString: url as string });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const s = open();
+    await migrate(s.pool);
+  });
+
+  afterAll(async () => {
+    await Promise.all(stores.map((s) => s.close().catch(() => {})));
+    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin.end();
+  });
+
+  let n = 0;
+  documentStoreContract("postgres", async () => {
+    // Fresh document ids are not enough: contract tests use fixed ids, so use a fresh schema each time.
+    const s = `${schema}_c${n++}`;
+    await admin.query(`CREATE SCHEMA ${s}`);
+    const store = new PgDocumentStore({ connectionString: url as string, schema: s });
+    stores.push(store);
+    await migrate(store.pool);
+    const close = store.close.bind(store);
+    store.close = async () => {
+      await close();
+      await admin.query(`DROP SCHEMA ${s} CASCADE`);
+    };
+    return store;
+  });
+
+  it("migrate is idempotent and safe to run concurrently", async () => {
+    const a = open();
+    const b = open();
+    expect(await migrate(a.pool)).toEqual([]);
+    expect(await Promise.all([migrate(a.pool), migrate(b.pool)])).toEqual([[], []]);
+  });
+
+  it("the log is append-only: UPDATE and DELETE are rejected by the database", async () => {
+    const s = open();
+    await s.appendUpdates("immutable", [upd(1)]);
+    await expect(s.pool.query("UPDATE document_updates SET frame = '\\x00' WHERE document_id = 'immutable'")).rejects.toThrow(
+      /append-only/,
+    );
+    await expect(s.pool.query("DELETE FROM document_updates WHERE document_id = 'immutable'")).rejects.toThrow(/append-only/);
+    expect((await s.readUpdates("immutable", 0, 10)).length).toBe(1);
+  });
+
+  it("concurrent writers to one document get unique gapless seqs", async () => {
+    const a = open();
+    const b = open();
+    const batches = await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        (i % 2 ? a : b).appendUpdates("race", [upd(1, { session: i + 1 }), upd(2, { session: i + 1 })]),
+      ),
+    );
+    const seqs = batches.flat().map((r) => (r.status === "appended" ? r.seq : -1));
+    expect([...seqs].sort((x, y) => x - y)).toEqual(Array.from({ length: 40 }, (_, i) => i + 1));
+    expect(await a.headSeq("race")).toBe(40);
+    const rows = await b.readUpdates("race", 0, 100);
+    expect(rows.map((r) => r.seq)).toEqual(Array.from({ length: 40 }, (_, i) => i + 1));
+  });
+
+  it("data and replay protection survive a store restart", async () => {
+    const first = open();
+    await first.appendUpdates("restart", [upd(1), upd(2)]);
+    await first.close();
+    const second = open();
+    expect((await second.readUpdates("restart", 0, 10)).length).toBe(2);
+    const r = await second.appendUpdates("restart", [upd(2), upd(3)]);
+    expect(r.map((x) => x.status)).toEqual(["duplicate", "appended"]);
+    expect(await second.headSeq("restart")).toBe(3);
+  });
+
+  it("a failed batch leaves nothing behind", async () => {
+    const s = open();
+    // 1e19 overflows bigint, so Postgres rejects the second entry after the first was inserted.
+    const poison = { ...upd(2), sessionId: 1e19 };
+    await expect(s.appendUpdates("atomic", [upd(1), poison])).rejects.toBeInstanceOf(StoreUnavailableError);
+    expect(await s.headSeq("atomic")).toBe(0);
+    expect(await s.readUpdates("atomic", 0, 10)).toEqual([]);
+    expect(await s.appendUpdates("atomic", [upd(1)])).toEqual([{ status: "appended", seq: 1 }]);
+  });
+
+  it("reports StoreUnavailableError when the database is unreachable", async () => {
+    const dead = new PgDocumentStore({ connectionString: "postgres://nobody@127.0.0.1:1/none", connectionTimeoutMs: 500 });
+    await expect(dead.ping()).rejects.toBeInstanceOf(StoreUnavailableError);
+    await expect(dead.appendUpdates("d", [upd(1)])).rejects.toBeInstanceOf(StoreUnavailableError);
+    await dead.close();
+  });
+});

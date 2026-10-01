@@ -33,7 +33,8 @@
 | Truncated, overlong, unknown type or flag, trailing bytes | `FrameError` with a code; gateway replies `ERROR malformed` and counts it |
 | Unknown or revoked key id | `unknown_key` |
 | Signature mismatch, wrong document | `bad_signature` |
-| Same key, session and an already-seen seq | gateway rejects `replay` |
+| Same key, session and an already stored client seq | gateway ACKs again without re-applying (idempotent retry) |
+| Client seq not above the stored high-water mark and never stored | gateway rejects `replay` |
 
 ## Security notes
 

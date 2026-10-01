@@ -19,7 +19,10 @@
       "Edit(packages/protocol/test/vectors.json)",
       "Edit(packages/crypto/**)",
       "Edit(packages/verifier/**)",
-      "Edit(apps/gateway/src/gateway.ts)"
+      "Edit(apps/gateway/src/gateway.ts)",
+      "Edit(apps/gateway/src/room.ts)",
+      "Edit(packages/store/migrations/**)",
+      "Edit(packages/store/src/pg.ts)"
     ],
     "deny": [
       "Read(.env)",

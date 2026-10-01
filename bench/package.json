@@ -10,9 +10,12 @@
   "dependencies": {
     "@omnisync/engine": "workspace:*",
     "@omnisync/protocol": "workspace:*",
-    "@omnisync/gateway": "workspace:*"
+    "@omnisync/gateway": "workspace:*",
+    "@omnisync/store": "workspace:*",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
-    "@omnisync/config": "workspace:*"
+    "@omnisync/config": "workspace:*",
+    "@types/pg": "^8.23.1"
   }
 }

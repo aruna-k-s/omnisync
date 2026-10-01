@@ -4,6 +4,7 @@
  *   pnpm bench                          # all engines, default sizes
  *   BENCH_OPS=100000 pnpm bench         # the 100,000-operation memory target
  *   BENCH_ENGINES=yjs,loro pnpm bench
+ *   BENCH_DATABASE_URL=postgres://... pnpm bench   # end-to-end with updates committed to PostgreSQL before ACK
  *
  * Writes raw results to bench/results/<timestamp>.json so decisions cite data.
  * Targets (spec, "Benchmark targets"): p99 keystroke-to-remote < 100 ms with
@@ -15,6 +16,9 @@ import { performance } from "node:perf_hooks";
 import { engines, getEngine, type EngineDoc, type EngineName } from "@omnisync/engine";
 import { Keyring, generateKeyPair, signUpdate, verifyUpdate } from "@omnisync/protocol";
 import { Gateway, GatewayClient } from "@omnisync/gateway";
+import { PgDocumentStore, migrate } from "@omnisync/store";
+import { randomBytes } from "node:crypto";
+import type { Pool } from "pg";
 
 const OPS = Number(process.env.BENCH_OPS ?? 20_000);
 const EDITORS = Number(process.env.BENCH_EDITORS ?? 20);
@@ -139,7 +143,18 @@ async function benchEndToEnd(name: EngineName) {
   const ring = new Keyring();
   const keys = Array.from({ length: EDITORS }, () => generateKeyPair());
   keys.forEach((k) => ring.add(k.publicKey));
-  const gateway = new Gateway({ engine: name, resolveKey: ring.resolve });
+  const dbUrl = process.env.BENCH_DATABASE_URL;
+  const schema = `bench_${randomBytes(4).toString("hex")}`;
+  let pgStore: PgDocumentStore | undefined;
+  let admin: Pool | undefined;
+  if (dbUrl) {
+    const { default: pg } = await import("pg");
+    admin = new pg.Pool({ connectionString: dbUrl });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    pgStore = new PgDocumentStore({ connectionString: dbUrl, schema });
+    await migrate(pgStore.pool);
+  }
+  const gateway = new Gateway({ engine: name, resolveKey: ring.resolve, ...(pgStore ? { store: pgStore } : {}) });
   const url = `ws://127.0.0.1:${await gateway.listen()}`;
   const clients = await Promise.all(
     keys.map((key, i) => GatewayClient.connect({ url, docId: "e2e", actor: i + 1, key, engine: name })),
@@ -174,9 +189,15 @@ async function benchEndToEnd(name: EngineName) {
     p50Ms: round(pct(latencies, 50)),
     p99Ms: round(pct(latencies, 99)),
     converged: texts.size === 1,
+    durable: pgStore !== undefined,
   };
   await Promise.all(clients.map((c) => c.close()));
   await gateway.close();
+  if (pgStore && admin) {
+    await pgStore.close();
+    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin.end();
+  }
   return result;
 }
 
