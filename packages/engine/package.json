@@ -1,0 +1,20 @@
+{
+  "name": "@omnisync/engine",
+  "version": "0.1.0",
+  "description": "Engine interface with Yjs, Automerge and Loro adapters",
+  "license": "UNLICENSED",
+  "type": "module",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@automerge/automerge": "^3.5.0",
+    "loro-crdt": "^1.16.4",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": { "@omnisync/config": "workspace:*" }
+}

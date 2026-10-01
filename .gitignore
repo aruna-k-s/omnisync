@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.turbo/
+coverage/
+bench/results/*.json
+*.log
+.env
+.claude/settings.local.json

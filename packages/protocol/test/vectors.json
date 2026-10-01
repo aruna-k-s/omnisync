@@ -1,0 +1,46 @@
+[
+  {
+    "name": "empty payload",
+    "seedHex": "0101010101010101010101010101010101010101010101010101010101010101",
+    "docId": "doc-1",
+    "sessionId": 0,
+    "seq": 0,
+    "payloadHex": "",
+    "publicKeyHex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+    "keyIdHex": "34750f98bd59fcfc",
+    "frameHex": "4f01030100000034750f98bd59fcfcb469877008a53fd563ba66c90380dfba8b38ce62a677af41ffaebcd232b1a78e37149684d70df66befde4ea8d2bea5d1dae48d33259fe955e0ee15b03cc12001"
+  },
+  {
+    "name": "small payload",
+    "seedHex": "0202020202020202020202020202020202020202020202020202020202020202",
+    "docId": "workbook/q3",
+    "sessionId": 42,
+    "seq": 1,
+    "payloadHex": "68656c6c6f",
+    "publicKeyHex": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+    "keyIdHex": "6a3803d5f059902a",
+    "frameHex": "4f0103012a010568656c6c6f6a3803d5f059902a1b658b21f64159c733b766c5e1e426ddc1e2a6ce22ea992bd466cd1e5bf62549131c6bbbde6c31227ffe2a3d9052ec0c8e1921d2fa2742f543f800c88bcae902"
+  },
+  {
+    "name": "multi-byte varints",
+    "seedHex": "0303030303030303030303030303030303030303030303030303030303030303",
+    "docId": "d",
+    "sessionId": 300,
+    "seq": 1099511627776,
+    "payloadHex": "00ff00ff",
+    "publicKeyHex": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+    "keyIdHex": "b62e867fa2f33afe",
+    "frameHex": "4f010301ac028080808080200400ff00ffb62e867fa2f33afedf0facd9eb9f7eee00e687a267939d27d78d00246dcc3612f27915d79e0a8ccec1f0d92e0c9ed9b01f42926c819b86911cde53fc2fe6fb1d2961046a2ad51a0e"
+  },
+  {
+    "name": "unicode doc id",
+    "seedHex": "0404040404040404040404040404040404040404040404040404040404040404",
+    "docId": "ಬೆಂಗಳೂರು-ledger",
+    "sessionId": 1,
+    "seq": 1,
+    "payloadHex": "01",
+    "publicKeyHex": "ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+    "keyIdHex": "c5b940ed3f65c391",
+    "frameHex": "4f01030101010101c5b940ed3f65c391c5af9e70e90554042c72b39ae88a56493ba74748ac6bfbe2fc99ffea49a55e59ae8a4153ee11c190452718b51030a802c56c5ac74a17e9ed9b29eddafadeef0b"
+  }
+]

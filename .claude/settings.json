@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install)",
+      "Bash(pnpm build)",
+      "Bash(pnpm test)",
+      "Bash(pnpm lint)",
+      "Bash(pnpm typecheck)",
+      "Bash(pnpm check)",
+      "Bash(pnpm bench)",
+      "Bash(pnpm --filter *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)"
+    ],
+    "ask": [
+      "Edit(packages/protocol/src/signing.ts)",
+      "Edit(packages/protocol/src/frame.ts)",
+      "Edit(packages/protocol/test/vectors.json)",
+      "Edit(packages/crypto/**)",
+      "Edit(packages/verifier/**)",
+      "Edit(apps/gateway/src/gateway.ts)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)"
+    ]
+  }
+}

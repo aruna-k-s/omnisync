@@ -1,0 +1,29 @@
+{
+  "name": "@omnisync/protocol",
+  "version": "0.1.0",
+  "description": "OmniSync wire format: frames, varints and signed update envelopes",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "vectors": "tsx scripts/gen-vectors.ts"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^3.2.0",
+    "@noble/hashes": "^2.4.0"
+  },
+  "devDependencies": {
+    "@omnisync/config": "workspace:*"
+  }
+}
