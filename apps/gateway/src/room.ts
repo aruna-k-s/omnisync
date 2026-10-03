@@ -31,6 +31,8 @@ export interface RoomConfig {
   maxBatch: number;
   /** Wait this long after a failed snapshot before trying again (ms). */
   compactRetryMs: number;
+  /** Give up on one object-store or snapshot-metadata call after this long (ms). */
+  objectTimeoutMs: number;
 }
 
 export type Log = (event: string, fields?: Record<string, unknown>) => void;
@@ -96,7 +98,7 @@ export class Room {
     let doc: EngineDoc | undefined;
     for (const meta of candidates) {
       try {
-        const bytes = await objects.get(meta.objectKey);
+        const bytes = await withTimeout(objects.get(meta.objectKey), this.d.config.objectTimeoutMs, "snapshot get");
         if (bytes === undefined) throw new Error("object missing");
         if (!equal(sha256(bytes), meta.sha256)) throw new Error("checksum mismatch");
         doc = engine.load(bytes, SERVER_ACTOR);
@@ -227,14 +229,13 @@ export class Room {
       const { docId, objects, store, stats } = this.d;
       try {
         const objectKey = snapshotObjectKey(docId, upToSeq, Buffer.from(digest).toString("hex"));
-        await objects.put(objectKey, bytes);
-        const version = await store.recordSnapshot(docId, {
-          objectKey,
-          sha256: digest,
-          upToSeq,
-          stateVector,
-          sizeBytes: bytes.length,
-        });
+        const limit = this.d.config.objectTimeoutMs;
+        await withTimeout(objects.put(objectKey, bytes), limit, "snapshot put");
+        const version = await withTimeout(
+          store.recordSnapshot(docId, { objectKey, sha256: digest, upToSeq, stateVector, sizeBytes: bytes.length }),
+          limit,
+          "snapshot record",
+        );
         stats.snapshots++;
         this.updatesSinceSnapshot = Math.max(0, this.updatesSinceSnapshot - covered);
         this.lastSnapshotAt = Date.now();
@@ -266,6 +267,15 @@ export class Room {
     this.#destroyed = true;
     this.doc.destroy();
   }
+}
+
+/** A hung dependency must never wedge eviction, shutdown or a cold load. */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
 function sha256(bytes: Uint8Array): Uint8Array {

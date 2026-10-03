@@ -65,16 +65,20 @@ export class FaultyDocumentStore implements DocumentStore {
 
 export class FaultyObjectStore implements ObjectStore {
   down = false;
+  /** While true put/get never settle, like a storage backend that stops answering. */
+  hang = false;
   /** Keys whose next get() returns these bytes instead (simulates corruption). */
   corrupt = new Map<string, Uint8Array>();
 
   constructor(readonly inner: ObjectStore) {}
 
   async put(key: string, bytes: Uint8Array): Promise<void> {
+    if (this.hang) return new Promise(() => {});
     if (this.down) throw new Error("injected object store outage");
     return this.inner.put(key, bytes);
   }
   async get(key: string): Promise<Uint8Array | undefined> {
+    if (this.hang) return new Promise(() => {});
     if (this.down) throw new Error("injected object store outage");
     return this.corrupt.get(key) ?? this.inner.get(key);
   }

@@ -47,6 +47,15 @@ export interface GatewayOptions {
   maxConcurrentCatchUps?: number;
   /** Wait after a failed snapshot before retrying (default 5 s). */
   compactRetryMs?: number;
+  /** Abandon one object-store or snapshot-metadata call after this long (default 10 s). */
+  objectTimeoutMs?: number;
+  /** Largest AWARENESS payload relayed (default 16 KiB). */
+  maxAwarenessBytes?: number;
+  /**
+   * Browser origins allowed to open a WebSocket. A request that carries an Origin header is
+   * refused unless it is listed (or this is "*"). Node clients send no Origin and are unaffected.
+   */
+  allowedOrigins?: readonly string[] | "*";
   /** Largest group-commit batch (default 256). */
   maxBatch?: number;
   /** Background sweep period for time-based compaction and eviction (default 1 s). */
@@ -116,6 +125,9 @@ export class Gateway {
       maxConcurrentCatchUps: opts.maxConcurrentCatchUps ?? 16,
       maxBatch: opts.maxBatch ?? 256,
       compactRetryMs: opts.compactRetryMs ?? 5000,
+      objectTimeoutMs: opts.objectTimeoutMs ?? 10_000,
+      maxAwarenessBytes: opts.maxAwarenessBytes ?? 16 * 1024,
+      allowedOrigins: opts.allowedOrigins ?? [],
       sweepMs: opts.sweepMs ?? 1000,
       heartbeatMs: opts.heartbeatMs ?? 30_000,
     };
@@ -164,6 +176,11 @@ export class Gateway {
       const docId = parseDocId(req);
       if (docId === undefined) {
         socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      if (!this.#originAllowed(req)) {
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
         socket.destroy();
         return;
       }
@@ -238,6 +255,7 @@ export class Gateway {
           compactEveryUpdates: this.#o.compactEveryUpdates,
           maxBatch: this.#o.maxBatch,
           compactRetryMs: this.#o.compactRetryMs,
+          objectTimeoutMs: this.#o.objectTimeoutMs,
         },
         stats: this.#stats,
         log: this.#log,
@@ -307,6 +325,13 @@ export class Gateway {
     ws.on("error", () => ws.terminate());
   }
 
+  #originAllowed(req: IncomingMessage): boolean {
+    const origin = req.headers.origin;
+    if (origin === undefined) return true; // not a browser
+    const allowed = this.#o.allowedOrigins;
+    return allowed === "*" || allowed.includes(origin);
+  }
+
   #heartbeat(): void {
     for (const ws of this.#wss?.clients ?? []) {
       const w = ws as WebSocket & { alive?: boolean };
@@ -333,7 +358,8 @@ export class Gateway {
       case FrameType.UPDATE:
         return this.#update(ws, docId, room, bytes);
       case FrameType.AWARENESS:
-        // Presence is relayed, never stored or applied.
+        // Presence is relayed, never stored or applied, and capped so it cannot be used to flood peers.
+        if (frame.payload.length > this.#o.maxAwarenessBytes) return this.#reject(ws, "awareness_too_large");
         for (const peer of room.clients) if (peer !== ws && peer.readyState === peer.OPEN) peer.send(bytes);
         return;
       default:
