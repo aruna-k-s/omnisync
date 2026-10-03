@@ -170,7 +170,7 @@ describe("control plane", () => {
       if (!v.ok) return;
       expect(v.certificate.subject).toBe(a.id);
       expect(Buffer.from(v.certificate.publicKey).equals(Buffer.from(key.publicKey))).toBe(true);
-      expect(v.certificate.notAfterMs - v.certificate.notBeforeMs).toBe(24 * HOUR);
+      expect(v.certificate.notAfterMs - v.certificate.notBeforeMs).toBe(12 * HOUR);
       expect(body.serial).toBe(Buffer.from(v.certificate.serial).toString("hex"));
       const rec = await p.identity.getCertificate(v.certificate.serial);
       expect(rec).toMatchObject({ principalId: a.id });

@@ -74,7 +74,7 @@ The log row stores the certificate serial next to the key id (migration `002`).
 
 ## Expiry and offline grace
 
-Certificates are short lived (default 24 h, control plane maximum 7 d). People edit offline, so:
+Certificates are short lived (default 12 h, control plane maximum 24 h, matching the 8-12 hour session-key lifetime in the product spec). People edit offline, so:
 
 | Gateway clock vs certificate | Mode |
 | --- | --- |

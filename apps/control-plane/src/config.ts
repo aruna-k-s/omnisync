@@ -50,8 +50,8 @@ export interface ResolvedConfig {
 
 export function resolveConfig(c: ControlPlaneConfig): ResolvedConfig {
   if (c.sessionSecret.length < 32) throw new Error("sessionSecret must be at least 32 bytes");
-  const certMaxLifetimeMs = c.certMaxLifetimeMs ?? 7 * 24 * HOUR_MS;
-  const certDefaultLifetimeMs = Math.min(c.certDefaultLifetimeMs ?? 24 * HOUR_MS, certMaxLifetimeMs);
+  const certMaxLifetimeMs = c.certMaxLifetimeMs ?? 24 * HOUR_MS;
+  const certDefaultLifetimeMs = Math.min(c.certDefaultLifetimeMs ?? 12 * HOUR_MS, certMaxLifetimeMs);
   return {
     oidc: c.oidc,
     issuer: c.issuer,
