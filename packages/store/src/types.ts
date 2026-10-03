@@ -10,6 +10,8 @@ export interface NewUpdate {
   readonly clientSeq: number;
   /** The complete signed frame, byte for byte. */
   readonly frame: Uint8Array;
+  /** Serial of the certificate the signer authenticated with (16 bytes). Absent for unauthenticated test setups. */
+  readonly certSerial?: Uint8Array;
 }
 
 export type AppendResult =
@@ -23,6 +25,7 @@ export type AppendResult =
 export interface StoredUpdate {
   readonly seq: number;
   readonly frame: Uint8Array;
+  readonly certSerial?: Uint8Array;
 }
 
 export interface SnapshotMeta {

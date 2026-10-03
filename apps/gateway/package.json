@@ -2,7 +2,7 @@
   "name": "@omnisync/gateway",
   "version": "0.1.0",
   "private": true,
-  "description": "Phase 0 sync gateway prototype: verifies signed updates and relays them between clients",
+  "description": "Sync gateway: certificate-authenticated, durable, signed updates",
   "type": "module",
   "exports": {
     ".": {
@@ -15,14 +15,16 @@
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "dev": "tsx src/main.ts",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "serve": "node dist/serve.js"
   },
   "dependencies": {
     "@omnisync/engine": "workspace:*",
     "@omnisync/protocol": "workspace:*",
     "ws": "^8.22.0",
     "yjs": "^13.6.33",
-    "@omnisync/store": "workspace:*"
+    "@omnisync/store": "workspace:*",
+    "@omnisync/crypto": "workspace:*"
   },
   "devDependencies": {
     "@omnisync/config": "workspace:*",

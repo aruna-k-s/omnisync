@@ -128,7 +128,7 @@ function benchSigning() {
   const n = 2000;
   const frames: Uint8Array[] = [];
   const t0 = performance.now();
-  for (let i = 0; i < n; i++) frames.push(signUpdate({ docId: "bench", sessionId: 1, seq: i + 1, payload }, key));
+  for (let i = 0; i < n; i++) frames.push(signUpdate({ docId: "bench", sessionId: 1, seq: i + 1, claimedAtMs: Date.now(), payload }, key));
   const t1 = performance.now();
   for (const f of frames) if (!verifyUpdate(f, "bench", ring.resolve).ok) throw new Error("verify failed");
   const t2 = performance.now();

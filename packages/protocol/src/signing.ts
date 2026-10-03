@@ -105,6 +105,8 @@ export interface UpdateInput {
   readonly docId: string;
   readonly sessionId: number;
   readonly seq: number;
+  /** When the edit was made on the device, ms since epoch. Signed, so it cannot be changed in transit. */
+  readonly claimedAtMs: number;
   readonly payload: Uint8Array;
 }
 
@@ -115,11 +117,31 @@ export function signUpdate(input: UpdateInput, key: KeyPair): Uint8Array {
     flags: FLAG_SIGNED,
     sessionId: input.sessionId,
     seq: input.seq,
+    claimedAtMs: input.claimedAtMs,
     payload: input.payload,
     keyId: key.keyId,
   };
   const signature = rawSign(signedMessage(input.docId, encodeUnsignedPart(base)), key.secretKey);
   return encodeFrame({ ...base, signature });
+}
+
+/**
+ * Detached Ed25519 signature for protocol objects other than UPDATE frames
+ * (certificates, AUTH proofs). Callers must prefix `message` with their own
+ * domain-separation string; see packages/crypto.
+ */
+export function signDetached(message: Uint8Array, secretKey: Uint8Array): Uint8Array {
+  return rawSign(message, secretKey);
+}
+
+/** Strict verification of a detached signature. Never throws. */
+export function verifyDetached(signature: Uint8Array, message: Uint8Array, publicKey: Uint8Array): boolean {
+  if (signature.length !== 64 || publicKey.length !== 32) return false;
+  try {
+    return rawVerify(signature, message, publicKey);
+  } catch {
+    return false;
+  }
 }
 
 /** Resolves a key id to a trusted public key, or undefined if unknown or revoked. */

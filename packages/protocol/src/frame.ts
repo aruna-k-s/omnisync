@@ -4,14 +4,14 @@ import { readVarint, varintSize, writeVarint } from "./varint.js";
  * Wire frame (spec: docs/specs/envelope.md)
  *
  * | magic 1B | version 1B | type 1B | flags 1B | session id varint | seq varint |
- * | payload length varint | payload | key id 8B | signature 64B |
+ * | claimed-at ms varint | payload length varint | payload | key id 8B | signature 64B |
  *
  * The key id and signature trailer is present only when FLAG_SIGNED is set,
  * and it is required for UPDATE frames.
  */
 
 export const MAGIC = 0x4f; // "O"
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const KEY_ID_BYTES = 8;
 export const SIGNATURE_BYTES = 64;
 export const DEFAULT_MAX_PAYLOAD_BYTES = 1024 * 1024;
@@ -23,6 +23,9 @@ export const FrameType = {
   AWARENESS: 4, // presence, unsigned, never stored
   ACK: 5,
   ERROR: 6,
+  AUTH_CHALLENGE: 7, // gateway to client: nonce, server time in claimedAtMs
+  AUTH_RESPONSE: 8, // client to gateway: certificate and possession proof
+  AUTH_RESULT: 9, // gateway to client: [role, mode]
 } as const;
 export type FrameType = (typeof FrameType)[keyof typeof FrameType];
 
@@ -34,6 +37,8 @@ export interface Frame {
   readonly flags: number;
   readonly sessionId: number;
   readonly seq: number;
+  /** Milliseconds since epoch: when an UPDATE was made on the device (signed). 0 where unused. */
+  readonly claimedAtMs: number;
   readonly payload: Uint8Array;
   /** Present only on signed frames. */
   readonly keyId?: Uint8Array;
@@ -62,16 +67,20 @@ export class FrameError extends Error {
 
 const VALID_TYPES = new Set<number>(Object.values(FrameType));
 
+/** What callers pass to the encoder: `claimedAtMs` defaults to 0. */
+export type FrameInput = Omit<Frame, "claimedAtMs"> & { readonly claimedAtMs?: number };
+
 export interface DecodeOptions {
   maxPayloadBytes?: number;
 }
 
 /** Bytes of a frame up to and including the key id: the part a signature covers. */
-export function encodeUnsignedPart(frame: Omit<Frame, "signature">): Uint8Array {
+export function encodeUnsignedPart(frame: Omit<FrameInput, "signature">): Uint8Array {
   validateShape(frame);
+  const claimedAtMs = frame.claimedAtMs ?? 0;
   const signed = (frame.flags & FLAG_SIGNED) !== 0;
   const headerLen =
-    4 + varintSize(frame.sessionId) + varintSize(frame.seq) + varintSize(frame.payload.length);
+    4 + varintSize(frame.sessionId) + varintSize(frame.seq) + varintSize(claimedAtMs) + varintSize(frame.payload.length);
   const out = new Uint8Array(headerLen + frame.payload.length + (signed ? KEY_ID_BYTES : 0));
   out[0] = MAGIC;
   out[1] = PROTOCOL_VERSION;
@@ -80,6 +89,7 @@ export function encodeUnsignedPart(frame: Omit<Frame, "signature">): Uint8Array 
   let o = 4;
   o = writeVarint(out, o, frame.sessionId);
   o = writeVarint(out, o, frame.seq);
+  o = writeVarint(out, o, claimedAtMs);
   o = writeVarint(out, o, frame.payload.length);
   out.set(frame.payload, o);
   o += frame.payload.length;
@@ -87,7 +97,7 @@ export function encodeUnsignedPart(frame: Omit<Frame, "signature">): Uint8Array 
   return out;
 }
 
-export function encodeFrame(frame: Frame): Uint8Array {
+export function encodeFrame(frame: FrameInput): Uint8Array {
   const head = encodeUnsignedPart(frame);
   if ((frame.flags & FLAG_SIGNED) === 0) return head;
   if (frame.signature?.length !== SIGNATURE_BYTES) {
@@ -109,10 +119,11 @@ export function decodeFrame(input: Uint8Array, opts: DecodeOptions = {}): Frame 
   const flags = input[3] as number;
   if ((flags & ~KNOWN_FLAGS) !== 0) throw new FrameError("bad_flags", `unknown flags ${flags}`);
 
-  let sessionId: number, seq: number, payloadLen: number, o: number;
+  let sessionId: number, seq: number, claimedAtMs: number, payloadLen: number, o: number;
   try {
     ({ value: sessionId, next: o } = readVarint(input, 4));
     ({ value: seq, next: o } = readVarint(input, o));
+    ({ value: claimedAtMs, next: o } = readVarint(input, o));
     ({ value: payloadLen, next: o } = readVarint(input, o));
   } catch (e) {
     throw new FrameError("truncated", (e as Error).message);
@@ -129,7 +140,7 @@ export function decodeFrame(input: Uint8Array, opts: DecodeOptions = {}): Frame 
   // Copy so callers can never alias the network buffer.
   const payload = input.slice(o, o + payloadLen);
   o += payloadLen;
-  const base = { type: type as FrameType, flags, sessionId, seq, payload };
+  const base = { type: type as FrameType, flags, sessionId, seq, claimedAtMs, payload };
   if (!signed) return base;
   return {
     ...base,
@@ -138,7 +149,7 @@ export function decodeFrame(input: Uint8Array, opts: DecodeOptions = {}): Frame 
   };
 }
 
-function validateShape(frame: Omit<Frame, "signature"> & { signature?: Uint8Array }): void {
+function validateShape(frame: Omit<FrameInput, "signature"> & { signature?: Uint8Array }): void {
   if (!VALID_TYPES.has(frame.type)) throw new FrameError("bad_type", `unknown frame type ${frame.type}`);
   if ((frame.flags & ~KNOWN_FLAGS) !== 0 || frame.flags < 0 || frame.flags > 0xff) {
     throw new FrameError("bad_flags", `unknown flags ${frame.flags}`);

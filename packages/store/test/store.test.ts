@@ -7,6 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   FsObjectStore,
   MemoryDocumentStore,
+  MemoryIdentityStore,
+  PgIdentityStore,
   MemoryObjectStore,
   PgDocumentStore,
   StoreUnavailableError,
@@ -15,8 +17,10 @@ import {
 } from "../src/index.js";
 import { FaultyDocumentStore } from "../src/testing.js";
 import { documentStoreContract, upd } from "./contract.js";
+import { identityStoreContract } from "./identity-contract.js";
 
 documentStoreContract("memory", async () => new MemoryDocumentStore());
+identityStoreContract("memory", async () => new MemoryIdentityStore());
 
 describe("object stores", () => {
   const bytes = new Uint8Array([1, 2, 3]);
@@ -105,6 +109,34 @@ describe.skipIf(!url)("PostgreSQL store", () => {
     };
     return store;
   });
+
+  let m = 0;
+  identityStoreContract("postgres", async () => {
+    const s = `${schema}_i${m++}`;
+    await admin.query(`CREATE SCHEMA ${s}`);
+    const docs = new PgDocumentStore({ connectionString: url as string, schema: s });
+    stores.push(docs);
+    await migrate(docs.pool);
+    const store = new PgIdentityStore(docs.pool);
+    store.close = async () => {
+      await docs.close();
+      await admin.query(`DROP SCHEMA ${s} CASCADE`);
+    };
+    return store;
+  });
+
+  it("the audit trail is append-only in the database itself", async () => {
+    const docs = open();
+    const ids = new PgIdentityStore(docs.pool);
+    await ids.upsertPrincipal(
+      { oidcIssuer: "i", oidcSubject: "s", email: "e", displayName: "d", orgRole: "member" },
+      { atMs: 1, actor: "system", action: "auth.login", target: "" },
+    );
+    await expect(docs.pool.query("UPDATE audit_events SET actor = 'x'")).rejects.toThrow(/append-only/);
+    await expect(docs.pool.query("DELETE FROM audit_events")).rejects.toThrow(/append-only/);
+    expect(await ids.listAudit(0, 10)).toHaveLength(1);
+  });
+
 
   it("migrate is idempotent and safe to run concurrently", async () => {
     const a = open();

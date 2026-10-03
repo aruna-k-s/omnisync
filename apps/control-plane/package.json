@@ -1,0 +1,41 @@
+{
+  "name": "@omnisync/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Control plane: OIDC login, certificate issuance, revocation and document access lists",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@nestjs/common": "^12.1.2",
+    "@nestjs/core": "^12.1.2",
+    "@nestjs/platform-fastify": "^12.1.2",
+    "@omnisync/crypto": "workspace:*",
+    "@omnisync/protocol": "workspace:*",
+    "@omnisync/store": "workspace:*",
+    "fastify": "^5.12.5",
+    "jose": "^6.2.12",
+    "openid-client": "^6.8.8",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@omnisync/config": "workspace:*",
+    "@omnisync/gateway": "workspace:*",
+    "@swc/core": "^1.16.13",
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.1",
+    "unplugin-swc": "^2.0.0"
+  }
+}

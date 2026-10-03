@@ -27,6 +27,16 @@ export function documentStoreContract(name: string, make: () => Promise<Document
       await s.close();
     });
 
+    it("keeps the signing certificate serial with the update", async () => {
+      const s = await make();
+      const serial = new Uint8Array(16).fill(5);
+      await s.appendUpdates("d", [{ ...upd(1), certSerial: serial }, upd(2)]);
+      const rows = await s.readUpdates("d", 0, 10);
+      expect([...(rows[0]?.certSerial ?? [])]).toEqual([...serial]);
+      expect(rows[1]?.certSerial).toBeUndefined();
+      await s.close();
+    });
+
     it("pages with afterSeq and limit", async () => {
       const s = await make();
       await s.appendUpdates("d", Array.from({ length: 10 }, (_, i) => upd(i + 1)));

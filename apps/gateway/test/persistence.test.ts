@@ -51,7 +51,7 @@ describe.each(kinds)("gateway durability on %s store", (kind) => {
       expect(g2.gateway.stats.loads).toBe(1);
 
       // The same signed frame again (a client that lost its ACK before the restart): acknowledged, not re-applied.
-      const frame = signUpdate({ docId: "doc", sessionId: 77, seq: 1, payload: b.doc.insertText(0, "!") }, keys[2]!);
+      const frame = signUpdate({ docId: "doc", sessionId: 77, claimedAtMs: 0, seq: 1, payload: b.doc.insertText(0, "!") }, keys[2]!);
       b.sendRaw(frame);
       b.sendRaw(frame);
       await until(() => g2.gateway.stats.duplicates === 1);

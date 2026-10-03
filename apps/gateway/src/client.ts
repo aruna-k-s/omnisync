@@ -1,6 +1,8 @@
 import WebSocket from "ws";
 import { getEngine, type EngineDoc, type EngineName } from "@omnisync/engine";
+import { encodeAuthResponse } from "@omnisync/crypto";
 import { FrameType, decodeFrame, encodeFrame, signUpdate, type KeyPair } from "@omnisync/protocol";
+import { ROLES, type Role } from "@omnisync/store";
 
 /**
  * Node client used by tests, the demo and the benchmark. The browser SDK
@@ -11,7 +13,11 @@ import { FrameType, decodeFrame, encodeFrame, signUpdate, type KeyPair } from "@
  *  - on (re)connect: SYNC_1/SYNC_2, then resend the unacknowledged queue in order;
  *  - reconnect with exponential backoff and full jitter, capped (default 30 s);
  *  - server hints (`busy;retry_after_ms=N`) raise the delay floor;
- *  - retryable errors (`unavailable`) keep the update queued; terminal ones reject it.
+ *  - retryable errors (`unavailable`, `rate_limited`) keep the update queued; terminal ones reject it;
+ *  - with a certificate the client answers the gateway's AUTH_CHALLENGE before anything else; a
+ *    permanent refusal (revoked, expired, no access) stops reconnecting and rejects queued edits;
+ *  - a certificate past its life but inside the grace window connects "upload only": queued edits
+ *    are delivered, nothing is read back.
  */
 export interface ClientOptions {
   url: string;
@@ -27,6 +33,15 @@ export interface ClientOptions {
   syncTimeoutMs?: number;
   /** Injectable for deterministic tests. */
   random?: () => number;
+  /** Session certificate for `key`, as issued by the control plane. Required by gateways with auth enabled. */
+  certificate?: Uint8Array;
+  /** Wall clock used to stamp edits (signed into each UPDATE). Injectable for tests. */
+  clock?: () => number;
+}
+
+interface Waiter {
+  readonly resolve: () => void;
+  readonly reject: (e: Error) => void;
 }
 
 interface Queued {
@@ -35,7 +50,9 @@ interface Queued {
   readonly reject: (e: Error) => void;
 }
 
-const RETRYABLE = new Set(["unavailable", "internal"]);
+const RETRYABLE = new Set(["unavailable", "internal", "rate_limited"]);
+/** Handshake refusals that may clear on their own; everything else is permanent. */
+const AUTH_RETRYABLE = new Set(["unavailable", "timeout"]);
 
 export class GatewayClient {
   readonly doc: EngineDoc;
@@ -43,6 +60,13 @@ export class GatewayClient {
   /** Delays chosen by the backoff so far, for tests and diagnostics. */
   readonly delays: number[] = [];
   reconnects = 0;
+  /** Role and mode the gateway granted on the current connection (certificate mode only). */
+  role: Role | undefined;
+  mode: "full" | "upload_only" = "full";
+  /** Set when the gateway permanently refused this identity. */
+  authFailure: string | undefined;
+  /** Server clock minus local clock at the last handshake, ms. Large values break edit timestamps. */
+  serverSkewMs = 0;
 
   readonly #opts: ClientOptions;
   readonly #sessionId: number;
@@ -56,13 +80,15 @@ export class GatewayClient {
   #delayFloor = 0;
   #timer: NodeJS.Timeout | undefined;
   #syncTimer: NodeJS.Timeout | undefined;
-  #syncWaiters: (() => void)[] = [];
+  #syncWaiters: Waiter[] = [];
+  readonly #clock: () => number;
   #onRemote: ((update: Uint8Array) => void) | undefined;
 
   private constructor(opts: ClientOptions) {
     this.#opts = opts;
     this.#sessionId = opts.sessionId ?? Math.floor(Math.random() * 2 ** 31);
     this.#random = opts.random ?? Math.random;
+    this.#clock = opts.clock ?? Date.now;
     this.doc = getEngine(opts.engine ?? "yjs").create(opts.actor);
   }
 
@@ -105,7 +131,7 @@ export class GatewayClient {
 
   /** SYNC_1 → SYNC_2: pulls everything the gateway has that this replica lacks. */
   sync(): Promise<void> {
-    const done = new Promise<void>((resolve) => this.#syncWaiters.push(resolve));
+    const done = new Promise<void>((resolve, reject) => this.#syncWaiters.push({ resolve, reject }));
     this.#sendSync1();
     return done;
   }
@@ -139,7 +165,7 @@ export class GatewayClient {
 
   #publish(payload: Uint8Array): Promise<void> {
     const seq = ++this.#seq;
-    const bytes = signUpdate({ docId: this.#opts.docId, sessionId: this.#sessionId, seq, payload }, this.#opts.key);
+    const bytes = signUpdate({ docId: this.#opts.docId, sessionId: this.#sessionId, seq, claimedAtMs: this.#clock(), payload }, this.#opts.key);
     const p = new Promise<void>((resolve, reject) => this.#outbox.set(seq, { bytes, resolve, reject }));
     p.catch(() => {}); // the caller may ignore it; that must not become an unhandled rejection
     if (this.#synced) this.#ws?.send(bytes);
@@ -152,7 +178,8 @@ export class GatewayClient {
     this.#synced = false;
     ws.on("open", () => {
       if (this.#ws !== ws) return;
-      this.#sendSync1();
+      // With a certificate the gateway speaks first (AUTH_CHALLENGE); the sync handshake follows the AUTH_RESULT.
+      if (!this.#opts.certificate) this.#sendSync1();
       this.#armSyncTimeout(ws);
     });
     ws.on("message", (data: Buffer) => {
@@ -164,6 +191,11 @@ export class GatewayClient {
       this.#synced = false;
       clearTimeout(this.#syncTimer);
       if (!this.#closed && this.#opts.reconnect !== false) this.#scheduleReconnect();
+      else if (!this.#synced) {
+        // Nobody will retry for the caller: say why the handshake ended instead of waiting forever.
+        const err = new Error(`connection closed before sync: ${this.errors.at(-1) ?? "no reason given"}`);
+        for (const w of this.#syncWaiters.splice(0)) w.reject(err);
+      }
     });
     return ws;
   }
@@ -206,14 +238,33 @@ export class GatewayClient {
       return;
     }
     switch (frame.type) {
+      case FrameType.AUTH_CHALLENGE: {
+        const cert = this.#opts.certificate;
+        if (!cert) return;
+        this.serverSkewMs = frame.claimedAtMs - this.#clock();
+        this.#ws?.send(
+          encodeFrame({
+            type: FrameType.AUTH_RESPONSE,
+            flags: 0,
+            sessionId: 0,
+            seq: 0,
+            payload: encodeAuthResponse(cert, this.#opts.key.secretKey, this.#opts.docId, frame.payload),
+          }),
+        );
+        return;
+      }
+      case FrameType.AUTH_RESULT: {
+        const first = this.role === undefined || !this.#synced;
+        this.role = ROLES[frame.payload[0] ?? 0];
+        this.mode = frame.payload[1] === 1 ? "upload_only" : "full";
+        if (!first) return; // a mid-session change of role or mode
+        if (this.mode === "full") this.#sendSync1();
+        else this.#markSynced(); // nothing to read in upload-only mode: deliver the queue and stop
+        return;
+      }
       case FrameType.SYNC_2:
         this.doc.applyUpdate(frame.payload);
-        clearTimeout(this.#syncTimer);
-        this.#synced = true;
-        this.#attempt = 0;
-        // Resend everything unacknowledged, oldest first. Duplicates are ACKed again by the gateway.
-        for (const q of this.#outbox.values()) this.#ws?.send(q.bytes);
-        for (const w of this.#syncWaiters.splice(0)) w();
+        this.#markSynced();
         return;
       case FrameType.UPDATE:
         // Relayed peer edit. Phase 1: verify the peer signature client-side too.
@@ -236,9 +287,36 @@ export class GatewayClient {
     }
   }
 
+  #markSynced(): void {
+    clearTimeout(this.#syncTimer);
+    this.#synced = true;
+    this.#attempt = 0;
+    // Resend everything unacknowledged, oldest first. Duplicates are ACKed again by the gateway.
+    for (const q of this.#outbox.values()) this.#ws?.send(q.bytes);
+    for (const w of this.#syncWaiters.splice(0)) w.resolve();
+  }
+
+  /** The gateway refused this identity for good: stop retrying and fail everything waiting. */
+  #fail(reason: string): void {
+    this.authFailure = reason;
+    this.#closed = true;
+    clearTimeout(this.#timer);
+    clearTimeout(this.#syncTimer);
+    const err = new Error(`gateway refused authentication: ${reason}`);
+    for (const q of this.#outbox.values()) q.reject(err);
+    this.#outbox.clear();
+    for (const w of this.#syncWaiters.splice(0)) w.reject(err);
+    this.#ws?.close();
+  }
+
   #onError(reason: string, seq: number): void {
     this.errors.push(reason);
     const [code, ...hints] = reason.split(";");
+    if (code === "auth_failed") {
+      const why = hints[0] ?? "unknown";
+      if (!AUTH_RETRYABLE.has(why)) this.#fail(why);
+      return; // retryable: the gateway closes the socket and the normal reconnect takes over
+    }
     const retryAfter = Number(/retry_after_ms=(\d+)/.exec(hints.join(";"))?.[1] ?? 0);
 
     if (code === "busy") {
@@ -269,7 +347,8 @@ export class GatewayClient {
   }
 
   #waitSynced(): Promise<void> {
+    if (this.authFailure) return Promise.reject(new Error(`gateway refused authentication: ${this.authFailure}`));
     if (this.#synced) return Promise.resolve();
-    return new Promise((resolve) => this.#syncWaiters.push(resolve));
+    return new Promise((resolve, reject) => this.#syncWaiters.push({ resolve, reject }));
   }
 }

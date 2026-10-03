@@ -63,9 +63,9 @@ export class PgDocumentStore implements DocumentStore {
              ON CONFLICT (document_id, key_id, session_id)
              DO UPDATE SET last_seq = EXCLUDED.last_seq WHERE update_sessions.last_seq < EXCLUDED.last_seq
              RETURNING 1)
-           INSERT INTO document_updates (document_id, seq, key_id, session_id, client_seq, frame)
-           SELECT $1, $5, $2, $3, $4, $6 FROM hw`,
-          [documentId, keyId, u.sessionId, u.clientSeq, seq + 1, buf(u.frame)],
+           INSERT INTO document_updates (document_id, seq, key_id, session_id, client_seq, frame, cert_serial)
+           SELECT $1, $5, $2, $3, $4, $6, $7 FROM hw`,
+          [documentId, keyId, u.sessionId, u.clientSeq, seq + 1, buf(u.frame), u.certSerial ? buf(u.certSerial) : null],
         );
         if (r.rowCount === 1) {
           seq++;
@@ -84,11 +84,15 @@ export class PgDocumentStore implements DocumentStore {
   }
 
   async readUpdates(documentId: string, afterSeq: number, limit: number): Promise<StoredUpdate[]> {
-    const r = await this.#query<{ seq: string; frame: Buffer }>(
-      "SELECT seq, frame FROM document_updates WHERE document_id = $1 AND seq > $2 ORDER BY seq LIMIT $3",
+    const r = await this.#query<{ seq: string; frame: Buffer; cert_serial: Buffer | null }>(
+      "SELECT seq, frame, cert_serial FROM document_updates WHERE document_id = $1 AND seq > $2 ORDER BY seq LIMIT $3",
       [documentId, afterSeq, limit],
     );
-    return r.rows.map((row) => ({ seq: Number(row.seq), frame: toBytes(row.frame) }));
+    return r.rows.map((row) => ({
+      seq: Number(row.seq),
+      frame: toBytes(row.frame),
+      ...(row.cert_serial ? { certSerial: toBytes(row.cert_serial) } : {}),
+    }));
   }
 
   async headSeq(documentId: string): Promise<number> {

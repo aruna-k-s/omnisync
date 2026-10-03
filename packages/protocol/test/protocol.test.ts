@@ -10,7 +10,9 @@ import {
   encodeVarint,
   generateKeyPair,
   readVarint,
+  signDetached,
   signUpdate,
+  verifyDetached,
   verifyUpdate,
   type Frame,
 } from "../src/index.js";
@@ -48,12 +50,15 @@ describe("frame", () => {
     FrameType.AWARENESS,
     FrameType.ACK,
     FrameType.ERROR,
+    FrameType.AUTH_CHALLENGE,
+    FrameType.AUTH_RESPONSE,
+    FrameType.AUTH_RESULT,
   );
 
   it("round-trips unsigned frames", () => {
     fc.assert(
-      fc.property(unsignedType, safeUint, safeUint, fc.uint8Array({ maxLength: 512 }), (type, sessionId, seq, payload) => {
-        const frame: Frame = { type, flags: 0, sessionId, seq, payload };
+      fc.property(unsignedType, safeUint, safeUint, safeUint, fc.uint8Array({ maxLength: 512 }), (type, sessionId, seq, claimedAtMs, payload) => {
+        const frame: Frame = { type, flags: 0, sessionId, seq, claimedAtMs, payload };
         expect(decodeFrame(encodeFrame(frame))).toEqual(frame);
       }),
     );
@@ -83,9 +88,42 @@ describe("frame", () => {
   });
 });
 
+describe("frame v2 header", () => {
+  it("defaults claimedAtMs to 0 and decodes it back", () => {
+    const f = decodeFrame(encodeFrame({ type: FrameType.ACK, flags: 0, sessionId: 1, seq: 1, payload: new Uint8Array() }));
+    expect(f.claimedAtMs).toBe(0);
+  });
+
+  it("rejects the old version outright", () => {
+    const bytes = encodeFrame({ type: FrameType.ACK, flags: 0, sessionId: 1, seq: 1, payload: new Uint8Array() });
+    bytes[1] = 1;
+    expect(() => decodeFrame(bytes)).toThrow(/unsupported version/);
+  });
+
+  it("signs the claimed time: changing it invalidates the signature", () => {
+    const bytes = signUpdate({ docId: "d", sessionId: 1, seq: 1, claimedAtMs: 1000, payload: new Uint8Array([1]) }, alice);
+    expect(verifyUpdate(bytes, "d", ring.resolve).ok).toBe(true);
+    const frame = decodeFrame(bytes);
+    const forged = encodeFrame({ ...frame, claimedAtMs: 999 });
+    expect(verifyUpdate(forged, "d", ring.resolve)).toEqual({ ok: false, reason: "bad_signature" });
+  });
+});
+
+describe("detached signatures", () => {
+  it("round-trip, and reject wrong key, message or malformed input without throwing", () => {
+    const msg = new TextEncoder().encode("m");
+    const sig = signDetached(msg, alice.secretKey);
+    expect(verifyDetached(sig, msg, alice.publicKey)).toBe(true);
+    expect(verifyDetached(sig, msg, mallory.publicKey)).toBe(false);
+    expect(verifyDetached(sig, new TextEncoder().encode("n"), alice.publicKey)).toBe(false);
+    expect(verifyDetached(new Uint8Array(3), msg, alice.publicKey)).toBe(false);
+    expect(verifyDetached(sig, msg, new Uint8Array(5))).toBe(false);
+  });
+});
+
 describe("signed updates", () => {
   const sign = (payload: Uint8Array, docId = "doc-1") =>
-    signUpdate({ docId, sessionId: 7, seq: 1, payload }, alice);
+    signUpdate({ docId, sessionId: 7, seq: 1, claimedAtMs: 1_700_000_000_000, payload }, alice);
 
   it("verify accepts what sign produces", () => {
     fc.assert(
@@ -118,7 +156,7 @@ describe("signed updates", () => {
   });
 
   it("rejects unknown and revoked keys", () => {
-    const fromMallory = signUpdate({ docId: "doc-1", sessionId: 1, seq: 1, payload: new Uint8Array([1]) }, mallory);
+    const fromMallory = signUpdate({ docId: "doc-1", sessionId: 1, seq: 1, claimedAtMs: 1, payload: new Uint8Array([1]) }, mallory);
     expect(verifyUpdate(fromMallory, "doc-1", ring.resolve)).toEqual({ ok: false, reason: "unknown_key" });
 
     const temp = new Keyring();

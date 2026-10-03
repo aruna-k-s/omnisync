@@ -1,3 +1,15 @@
+import type {
+  AuditEvent,
+  AuditInput,
+  AuthorizeQuery,
+  AuthorizeResult,
+  CertificateRecord,
+  Grant,
+  GrantGuard,
+  IdentityStore,
+  Principal,
+  Role,
+} from "./identity.js";
 import {
   StoreUnavailableError,
   type AppendResult,
@@ -84,5 +96,78 @@ export class FaultyObjectStore implements ObjectStore {
   }
   async delete(key: string): Promise<void> {
     return this.inner.delete(key);
+  }
+}
+
+/** Identity store that can be taken down, to prove the gateway fails closed. */
+export class FaultyIdentityStore implements IdentityStore {
+  down = false;
+  /** While true authorize() never settles, like a database that stopped answering. */
+  hang = false;
+  /** Number of authorize() calls, to prove batching. */
+  authorizeCalls = 0;
+
+  constructor(readonly inner: IdentityStore) {}
+
+  #gate(): void {
+    if (this.down) throw new StoreUnavailableError("injected identity fault");
+  }
+
+  async upsertPrincipal(i: Parameters<IdentityStore["upsertPrincipal"]>[0], a: AuditInput): Promise<Principal> {
+    this.#gate();
+    return this.inner.upsertPrincipal(i, a);
+  }
+  async getPrincipal(id: string): Promise<Principal | undefined> {
+    this.#gate();
+    return this.inner.getPrincipal(id);
+  }
+  async disablePrincipal(id: string, atMs: number, a: AuditInput): Promise<number> {
+    this.#gate();
+    return this.inner.disablePrincipal(id, atMs, a);
+  }
+  async recordCertificate(r: CertificateRecord, a: AuditInput): Promise<void> {
+    this.#gate();
+    return this.inner.recordCertificate(r, a);
+  }
+  async getCertificate(serial: Uint8Array): Promise<CertificateRecord | undefined> {
+    this.#gate();
+    return this.inner.getCertificate(serial);
+  }
+  async revokeCertificate(serial: Uint8Array, atMs: number, reason: string, a: AuditInput): Promise<boolean> {
+    this.#gate();
+    return this.inner.revokeCertificate(serial, atMs, reason, a);
+  }
+  async setGrant(d: string, p: string, role: Role, by: string, atMs: number, a: AuditInput, g?: GrantGuard): Promise<void> {
+    this.#gate();
+    return this.inner.setGrant(d, p, role, by, atMs, a, g);
+  }
+  async removeGrant(d: string, p: string, a: AuditInput, g?: GrantGuard): Promise<boolean> {
+    this.#gate();
+    return this.inner.removeGrant(d, p, a, g);
+  }
+  async listGrants(d: string): Promise<Grant[]> {
+    this.#gate();
+    return this.inner.listGrants(d);
+  }
+  async roleOf(d: string, p: string): Promise<Role | undefined> {
+    this.#gate();
+    return this.inner.roleOf(d, p);
+  }
+  async authorize(q: readonly AuthorizeQuery[]): Promise<AuthorizeResult[]> {
+    this.authorizeCalls++;
+    this.#gate();
+    if (this.hang) return new Promise(() => {});
+    return this.inner.authorize(q);
+  }
+  async listAudit(after: number, limit: number): Promise<AuditEvent[]> {
+    this.#gate();
+    return this.inner.listAudit(after, limit);
+  }
+  async ping(): Promise<void> {
+    this.#gate();
+    return this.inner.ping();
+  }
+  close(): Promise<void> {
+    return this.inner.close();
   }
 }

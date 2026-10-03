@@ -41,6 +41,8 @@ export type Log = (event: string, fields?: Record<string, unknown>) => void;
 export interface Submission {
   readonly frame: Frame;
   readonly bytes: Uint8Array;
+  /** Certificate that authenticated the signer; recorded next to the update. */
+  readonly certSerial?: Uint8Array;
   /** Committed and applied. `fresh` is false when this was a retry of an already stored update. */
   readonly accepted: (seq: number, fresh: boolean) => void;
   readonly rejected: (reason: string) => void;
@@ -170,6 +172,7 @@ export class Room {
           sessionId: s.frame.sessionId,
           clientSeq: s.frame.seq,
           frame: s.bytes,
+          ...(s.certSerial ? { certSerial: s.certSerial } : {}),
         })),
       );
       this.d.onStoreHealth(true);

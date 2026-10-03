@@ -41,7 +41,7 @@ export class MemoryDocumentStore implements DocumentStore {
         d.sessions.set(sessionKey, u.clientSeq);
         d.stored.add(`${sessionKey}:${u.clientSeq}`);
         const seq = ++d.headSeq;
-        d.updates.push({ seq, frame: u.frame.slice() });
+        d.updates.push({ seq, frame: u.frame.slice(), ...(u.certSerial ? { certSerial: u.certSerial.slice() } : {}) });
         return { status: "appended", seq };
       }
       return d.stored.has(`${sessionKey}:${u.clientSeq}`) ? { status: "duplicate" } : { status: "replay" };
@@ -51,7 +51,7 @@ export class MemoryDocumentStore implements DocumentStore {
   async readUpdates(documentId: string, afterSeq: number, limit: number): Promise<StoredUpdate[]> {
     const d = this.#docs.get(documentId);
     if (!d) return [];
-    return d.updates.filter((u) => u.seq > afterSeq).slice(0, limit).map((u) => ({ seq: u.seq, frame: u.frame.slice() }));
+    return d.updates.filter((u) => u.seq > afterSeq).slice(0, limit).map((u) => ({ seq: u.seq, frame: u.frame.slice(), ...(u.certSerial ? { certSerial: u.certSerial.slice() } : {}) }));
   }
 
   async headSeq(documentId: string): Promise<number> {

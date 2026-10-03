@@ -67,7 +67,7 @@ for (const engine of Object.keys(engines) as (keyof typeof engines)[]) {
 
     it("rejects updates from unknown keys and never applies them", async () => {
       const a = await connect(1);
-      const forged = signUpdate({ docId: "doc-1", sessionId: 1, seq: 1, payload: a.doc.insertText(0, "evil") }, mallory);
+      const forged = signUpdate({ docId: "doc-1", sessionId: 1, claimedAtMs: 0, seq: 1, payload: a.doc.insertText(0, "evil") }, mallory);
       a.sendRaw(forged);
       await until(() => a.errors.includes("unknown_key"));
       expect(gateway.textOf("doc-1")).toBe("");
@@ -75,7 +75,7 @@ for (const engine of Object.keys(engines) as (keyof typeof engines)[]) {
 
     it("rejects an update signed for another document", async () => {
       const a = await connect(1);
-      const wrongDoc = signUpdate({ docId: "doc-2", sessionId: 1, seq: 1, payload: a.doc.insertText(0, "x") }, alice);
+      const wrongDoc = signUpdate({ docId: "doc-2", sessionId: 1, claimedAtMs: 0, seq: 1, payload: a.doc.insertText(0, "x") }, alice);
       a.sendRaw(wrongDoc);
       await until(() => a.errors.includes("bad_signature"));
       expect(gateway.textOf("doc-1")).toBe("");
@@ -83,7 +83,7 @@ for (const engine of Object.keys(engines) as (keyof typeof engines)[]) {
 
     it("acknowledges an exact retry once without applying it twice", async () => {
       const a = await connect(1);
-      const frame = signUpdate({ docId: "doc-1", sessionId: 9, seq: 1, payload: a.doc.insertText(0, "once") }, alice);
+      const frame = signUpdate({ docId: "doc-1", sessionId: 9, claimedAtMs: 0, seq: 1, payload: a.doc.insertText(0, "once") }, alice);
       a.sendRaw(frame);
       a.sendRaw(frame);
       await until(() => gateway.stats.duplicates === 1);
@@ -94,8 +94,8 @@ for (const engine of Object.keys(engines) as (keyof typeof engines)[]) {
 
     it("rejects an old client seq that was never stored", async () => {
       const a = await connect(1);
-      a.sendRaw(signUpdate({ docId: "doc-1", sessionId: 9, seq: 5, payload: a.doc.insertText(0, "x") }, alice));
-      a.sendRaw(signUpdate({ docId: "doc-1", sessionId: 9, seq: 3, payload: a.doc.insertText(0, "y") }, alice));
+      a.sendRaw(signUpdate({ docId: "doc-1", sessionId: 9, claimedAtMs: 0, seq: 5, payload: a.doc.insertText(0, "x") }, alice));
+      a.sendRaw(signUpdate({ docId: "doc-1", sessionId: 9, claimedAtMs: 0, seq: 3, payload: a.doc.insertText(0, "y") }, alice));
       await until(() => a.errors.includes("replay"));
       expect(gateway.stats.accepted).toBe(1);
     });

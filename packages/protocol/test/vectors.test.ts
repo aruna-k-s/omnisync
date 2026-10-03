@@ -22,6 +22,7 @@ interface Vector {
   docId: string;
   sessionId: number;
   seq: number;
+  claimedAtMs: number;
   payloadHex: string;
   publicKeyHex: string;
   keyIdHex: string;
@@ -44,7 +45,7 @@ describe.each(["node", "noble"] as const)("test vectors (%s backend)", (backend)
       expect(bytesToHex(key.publicKey)).toBe(v.publicKeyHex);
       expect(bytesToHex(key.keyId)).toBe(v.keyIdHex);
       const frame = signUpdate(
-        { docId: v.docId, sessionId: v.sessionId, seq: v.seq, payload: hexToBytes(v.payloadHex) },
+        { docId: v.docId, sessionId: v.sessionId, seq: v.seq, claimedAtMs: v.claimedAtMs, payload: hexToBytes(v.payloadHex) },
         key,
       );
       expect(bytesToHex(frame)).toBe(v.frameHex);
