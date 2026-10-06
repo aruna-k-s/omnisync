@@ -58,6 +58,8 @@ export interface RoomDeps {
   readonly log: Log;
   /** Called with true after a store failure and false after the next success. */
   readonly onStoreHealth: (ok: boolean) => void;
+  /** Gateway clock: the receive time chained into every ledger entry. */
+  readonly now: () => number;
 }
 
 /**
@@ -165,6 +167,8 @@ export class Room {
     const { store, docId, stats } = this.d;
     let results;
     try {
+      // One receive time per group commit: the batch arrived together and commits together.
+      const receivedAtMs = this.d.now();
       results = await store.appendUpdates(
         docId,
         batch.map((s) => ({
@@ -172,6 +176,8 @@ export class Room {
           sessionId: s.frame.sessionId,
           clientSeq: s.frame.seq,
           frame: s.bytes,
+          payloadHash: sha256(s.frame.payload),
+          receivedAtMs,
           ...(s.certSerial ? { certSerial: s.certSerial } : {}),
         })),
       );

@@ -1,0 +1,29 @@
+{
+  "name": "@omnisync/verifier",
+  "version": "0.1.0",
+  "description": "Offline ledger verifier and the `omnisync` command. Needs an export and public keys, never a database",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": { "omnisync": "./dist/cli.js" },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@omnisync/crypto": "workspace:*",
+    "@omnisync/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@omnisync/config": "workspace:*"
+  }
+}

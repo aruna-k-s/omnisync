@@ -125,6 +125,54 @@ describe.skipIf(!url)("PostgreSQL store", () => {
     return store;
   });
 
+  it("checkpoints are append-only in the database, and concurrent reservations of one n yield one winner", async () => {
+    const docs = open();
+    await docs.appendUpdates("cp-race", [upd(1)]);
+    const heads = await docs.pendingHeads(100);
+    const cp = (hashByte: number) => ({
+      n: 1,
+      createdAtMs: 1,
+      prevHash: new Uint8Array(32),
+      hash: new Uint8Array(32).fill(hashByte),
+      bytes: new Uint8Array([hashByte]),
+      heads,
+    });
+    const writers = [open(), open(), open(), open()];
+    const results = await Promise.all(writers.map((w, i) => w.reserveCheckpoint(cp(i + 1))));
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect((await docs.listCheckpoints(0, 10)).length).toBe(1);
+    await expect(docs.pool.query("UPDATE ledger_checkpoints SET bytes = '\\x00'")).rejects.toThrow(/append-only/);
+    await expect(docs.pool.query("DELETE FROM ledger_checkpoints")).rejects.toThrow(/append-only/);
+  });
+
+  it("the database refuses a checkpoint position beyond the log", async () => {
+    const docs = open();
+    await docs.appendUpdates("cp-bound", [upd(1)]);
+    await expect(docs.pool.query("UPDATE documents SET checkpoint_seq = 5 WHERE id = 'cp-bound'")).rejects.toThrow(/checkpoint_within_head/);
+  });
+
+  it("migration 003 refuses to chain pre-ledger rows", async () => {
+    const s = `${schema}_m3`;
+    await admin.query(`CREATE SCHEMA ${s}`);
+    const pool = new pg.Pool({ connectionString: url as string, options: `-c search_path=${s}` });
+    try {
+      // Apply 001 and 002 by hand, add a row the way week 4 wrote it, then run the real migrator.
+      const { readFile } = await import("node:fs/promises");
+      for (const f of ["001_init.sql", "002_identity.sql"]) {
+        const path = new URL(`../migrations/${f}`, import.meta.url);
+        await pool.query(await readFile(path, "utf8"));
+      }
+      await pool.query("CREATE TABLE schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())");
+      await pool.query("INSERT INTO schema_migrations (name) VALUES ('001_init.sql'), ('002_identity.sql')");
+      await pool.query("INSERT INTO documents (id) VALUES ('old')");
+      await pool.query("INSERT INTO document_updates (document_id, seq, key_id, session_id, client_seq, frame) VALUES ('old', 1, '\\x01', 1, 1, '\\x02')");
+      await expect(migrate(pool)).rejects.toThrow(/cannot chain rows written before the ledger/);
+    } finally {
+      await pool.end();
+      await admin.query(`DROP SCHEMA ${s} CASCADE`);
+    }
+  });
+
   it("the audit trail is append-only in the database itself", async () => {
     const docs = open();
     const ids = new PgIdentityStore(docs.pool);
@@ -188,7 +236,7 @@ describe.skipIf(!url)("PostgreSQL store", () => {
     await expect(s.appendUpdates("atomic", [upd(1), poison])).rejects.toBeInstanceOf(StoreUnavailableError);
     expect(await s.headSeq("atomic")).toBe(0);
     expect(await s.readUpdates("atomic", 0, 10)).toEqual([]);
-    expect(await s.appendUpdates("atomic", [upd(1)])).toEqual([{ status: "appended", seq: 1 }]);
+    expect((await s.appendUpdates("atomic", [upd(1)]))[0]).toMatchObject({ status: "appended", seq: 1 });
   });
 
   it("reports StoreUnavailableError when the database is unreachable", async () => {

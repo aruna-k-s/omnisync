@@ -124,6 +124,7 @@ export async function connectClient(
 // ----- identity helpers ---------------------------------------------------------
 
 export const issuerKey = generateKeyPair(new Uint8Array(32).fill(200));
+export const ledgerKey = generateKeyPair(new Uint8Array(32).fill(201));
 export const T0 = 1_800_000_000_000;
 export const HOUR = 3_600_000;
 
@@ -174,7 +175,7 @@ export class TestIdentity {
       signerFromKeyPair(issuerKey),
     );
     await this.store.recordCertificate(
-      { serial, principalId: principal.id, keyId: key.keyId, publicKey: key.publicKey, issuedAtMs, notBeforeMs, notAfterMs },
+      { serial, principalId: principal.id, keyId: key.keyId, publicKey: key.publicKey, issuedAtMs, notBeforeMs, notAfterMs, certificate },
       { atMs: issuedAtMs, actor: "system", action: "cert.issue", target: principal.id },
     );
     for (const [doc, role] of Object.entries(grants)) await this.grant(doc, principal, role);

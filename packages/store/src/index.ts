@@ -6,3 +6,4 @@ export { migrate } from "./migrate.js";
 export * from "./identity.js";
 export { MemoryIdentityStore } from "./identity-memory.js";
 export { PgIdentityStore } from "./identity-pg.js";
+export { chainFields, validateBatch, byIdBytes } from "./ledger.js";

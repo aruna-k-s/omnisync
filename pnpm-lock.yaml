@@ -81,6 +81,9 @@ importers:
       '@omnisync/gateway':
         specifier: workspace:*
         version: link:../gateway
+      '@omnisync/verifier':
+        specifier: workspace:*
+        version: link:../../packages/verifier
       '@swc/core':
         specifier: ^1.16.13
         version: 1.16.13
@@ -108,6 +111,9 @@ importers:
       '@omnisync/store':
         specifier: workspace:*
         version: link:../../packages/store
+      '@omnisync/verifier':
+        specifier: workspace:*
+        version: link:../../packages/verifier
       ws:
         specifier: ^8.22.0
         version: 8.22.0
@@ -199,6 +205,9 @@ importers:
 
   packages/store:
     dependencies:
+      '@omnisync/crypto':
+        specifier: workspace:*
+        version: link:../crypto
       pg:
         specifier: ^8.23.1
         version: 8.23.1
@@ -209,6 +218,19 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+
+  packages/verifier:
+    dependencies:
+      '@omnisync/crypto':
+        specifier: workspace:*
+        version: link:../crypto
+      '@omnisync/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      '@omnisync/config':
+        specifier: workspace:*
+        version: link:../config
 
 packages:
 

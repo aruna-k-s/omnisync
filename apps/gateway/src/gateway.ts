@@ -381,6 +381,7 @@ export class Gateway {
         onStoreHealth: (ok) => {
           this.#degraded = !ok;
         },
+        now: this.#auth?.now ?? Date.now,
       });
       // A failed load must not leave a poisoned room behind: the next connection retries.
       created.ready.catch(() => {

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Inject, Injectable } from "@nestjs/common";
 import { issueCertificate, verifyEnrollmentProof } from "@omnisync/crypto";
 import { bytesToHex, keyIdOf } from "@omnisync/protocol";
@@ -37,7 +37,8 @@ export interface IssuedCertificate {
   readonly notAfterMs: number;
 }
 
-const DOC_ID = /^[A-Za-z0-9._~-]{1,128}$/;
+/** Canonical lowercase UUID, as minted by `createDocument`. */
+const DOC_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /** All state changes go through here, each with its audit event, so rules live in one place. */
 @Injectable()
@@ -93,6 +94,8 @@ export class IdentityService {
         issuedAtMs: now,
         notBeforeMs: now,
         notAfterMs: now + lifetime,
+        // The signed bytes, so an auditor can verify the whole chain offline (ledger export).
+        certificate,
       },
       this.#audit(principal.id, "cert.issue", bytesToHex(serial), `lifetime_ms=${lifetime}`),
     );
@@ -121,8 +124,11 @@ export class IdentityService {
   }
 
   async createDocument(actor: Principal): Promise<string> {
-    const id = randomBytes(16).toString("base64url");
-    await this.store.setGrant(id, actor.id, "admin", actor.id, this.cfg.now(), this.#audit(actor.id, "document.create", id));
+    const id = randomUUID();
+    // Registry row, the creator's admin grant and the audit event commit together or not at all.
+    if (!(await this.store.createDocument(id, actor.id, this.cfg.now(), this.#audit(actor.id, "document.create", id)))) {
+      throw new ServiceError("conflict", "document id collision, try again");
+    }
     return id;
   }
 

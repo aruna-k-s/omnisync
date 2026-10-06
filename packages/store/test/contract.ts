@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { DocumentStore, NewUpdate } from "../src/index.js";
+import { ZERO_HASH, entryHash, hashBytes } from "@omnisync/crypto";
+import type { DocumentStore, LedgerStore, NewUpdate } from "../src/index.js";
 
 const key = (n: number) => new Uint8Array(8).fill(n);
 export const upd = (clientSeq: number, opts: { session?: number; key?: number; byte?: number } = {}): NewUpdate => ({
@@ -7,18 +8,31 @@ export const upd = (clientSeq: number, opts: { session?: number; key?: number; b
   sessionId: opts.session ?? 1,
   clientSeq,
   frame: new Uint8Array([opts.byte ?? clientSeq, 0xaa]),
+  payloadHash: new Uint8Array(32).fill(opts.byte ?? clientSeq),
+  receivedAtMs: 1_800_000_000_000 + clientSeq,
+});
+
+type Store = DocumentStore & LedgerStore;
+const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
+const checkpoint = (n: number, prevHash: Uint8Array, heads: { documentId: string; seq: number; headHash: Uint8Array }[]) => ({
+  n,
+  createdAtMs: 1_800_000_100_000 + n,
+  prevHash,
+  hash: new Uint8Array(32).fill(100 + n),
+  bytes: new Uint8Array([n]),
+  heads,
 });
 
 /** Behaviour every DocumentStore must have, run against memory and Postgres alike. */
-export function documentStoreContract(name: string, make: () => Promise<DocumentStore>): void {
+export function documentStoreContract(name: string, make: () => Promise<Store>): void {
   describe(`${name} DocumentStore contract`, () => {
     it("assigns gapless increasing seqs and returns frames byte for byte", async () => {
       const s = await make();
       const r = await s.appendUpdates("d", [upd(1), upd(2), upd(3)]);
-      expect(r).toEqual([
-        { status: "appended", seq: 1 },
-        { status: "appended", seq: 2 },
-        { status: "appended", seq: 3 },
+      expect(r.map((x) => [x.status, x.status === "appended" ? x.seq : 0])).toEqual([
+        ["appended", 1],
+        ["appended", 2],
+        ["appended", 3],
       ]);
       expect(await s.headSeq("d")).toBe(3);
       const rows = await s.readUpdates("d", 0, 100);
@@ -102,6 +116,144 @@ export function documentStoreContract(name: string, make: () => Promise<Document
       expect([...(list[0]?.sha256 ?? [])]).toEqual(Array(32).fill(9));
       expect((await s.listSnapshots("d", 1)).length).toBe(1);
       expect(await s.listSnapshots("other", 5)).toEqual([]);
+      await s.close();
+    });
+
+    it("chains every entry: prev hash links, entry hash recomputes, frame hash covers the stored bytes", async () => {
+      const s = await make();
+      const serial = new Uint8Array(16).fill(9);
+      await s.appendUpdates("d", [{ ...upd(1), certSerial: serial }, upd(2), upd(3)]);
+      await s.appendUpdates("d", [upd(4)]);
+      const rows = await s.readUpdates("d", 0, 10);
+      expect(rows.map((r) => r.seq)).toEqual([1, 2, 3, 4]);
+      let prev = ZERO_HASH;
+      for (const r of rows) {
+        expect(hex(r.prevHash)).toBe(hex(prev));
+        expect(hex(r.frameHash)).toBe(hex(hashBytes(r.frame)));
+        expect(r.keyEpoch).toBe(0);
+        expect(r.receivedAtMs).toBe(1_800_000_000_000 + r.seq);
+        const expected = entryHash({
+          documentId: "d",
+          seq: r.seq,
+          prevHash: prev,
+          receivedAtMs: r.receivedAtMs,
+          keyEpoch: r.keyEpoch,
+          certSerial: r.certSerial,
+          frameHash: r.frameHash,
+          payloadHash: r.payloadHash,
+        });
+        expect(hex(r.entryHash)).toBe(hex(expected));
+        prev = r.entryHash;
+      }
+      expect(rows[0]?.certSerial && hex(rows[0].certSerial)).toBe(hex(serial));
+      await s.close();
+    });
+
+    it("returns the entry hash from append and keeps chains per document independent", async () => {
+      const s = await make();
+      const [a] = await s.appendUpdates("a", [upd(1)]);
+      const [b] = await s.appendUpdates("b", [upd(1)]);
+      const rowA = (await s.readUpdates("a", 0, 1))[0];
+      expect(a?.status === "appended" && hex(a.entryHash)).toBe(hex(rowA?.entryHash ?? new Uint8Array()));
+      expect(a?.status === "appended" && b?.status === "appended" && hex(a.entryHash) !== hex(b.entryHash)).toBe(true);
+      expect(hex((await s.readUpdates("b", 0, 1))[0]?.prevHash ?? new Uint8Array(1))).toBe(hex(ZERO_HASH));
+      await s.close();
+    });
+
+    it("a duplicate or replay changes no chain state", async () => {
+      const s = await make();
+      await s.appendUpdates("d", [upd(1), upd(3)]);
+      const before = await s.readUpdates("d", 0, 10);
+      await s.appendUpdates("d", [upd(1), upd(2), upd(3)]);
+      expect(await s.readUpdates("d", 0, 10)).toEqual(before);
+      const [next] = await s.appendUpdates("d", [upd(4)]);
+      expect(next?.status === "appended" && next.seq).toBe(3);
+      expect(hex((await s.readUpdates("d", 2, 1))[0]?.prevHash ?? new Uint8Array(1))).toBe(hex(before[1]?.entryHash ?? new Uint8Array()));
+      await s.close();
+    });
+
+    it("refuses a malformed batch before storing anything", async () => {
+      const s = await make();
+      await expect(s.appendUpdates("d", [upd(1), { ...upd(2), payloadHash: new Uint8Array(5) }])).rejects.toThrow(RangeError);
+      await expect(s.appendUpdates("d", [{ ...upd(1), certSerial: new Uint8Array(3) }])).rejects.toThrow(RangeError);
+      expect(await s.headSeq("d")).toBe(0);
+      await s.close();
+    });
+
+    it("lists documents in byte order and pages with a cursor", async () => {
+      const s = await make();
+      for (const id of ["b", "a", "B", "ä", "a1"]) await s.appendUpdates(id, [upd(1)]);
+      expect(await s.listDocuments(undefined, 10)).toEqual(["B", "a", "a1", "b", "ä"]);
+      expect(await s.listDocuments("a", 2)).toEqual(["a1", "b"]);
+      expect(await s.listDocuments("ä", 2)).toEqual([]);
+      await s.close();
+    });
+
+    it("reports pending heads and entry counts until a checkpoint covers them", async () => {
+      const s = await make();
+      expect(await s.pendingHeads(10)).toEqual([]);
+      expect(await s.lastCheckpoint()).toBeUndefined();
+      await s.appendUpdates("b", [upd(1), upd(2)]);
+      await s.appendUpdates("a", [upd(1)]);
+      const heads = await s.pendingHeads(10);
+      expect(heads.map((h) => [h.documentId, h.seq])).toEqual([["a", 1], ["b", 2]]);
+      expect(await s.pendingEntries()).toBe(3);
+      expect((await s.pendingHeads(1)).length).toBe(1);
+
+      expect(await s.reserveCheckpoint(checkpoint(1, ZERO_HASH, heads))).toBe(true);
+      expect(await s.pendingHeads(10)).toEqual([]);
+      expect(await s.pendingEntries()).toBe(0);
+      const last = await s.lastCheckpoint();
+      expect(last?.n).toBe(1);
+      expect(last?.uploadedAtMs).toBeUndefined();
+
+      await s.appendUpdates("b", [upd(3)]);
+      expect((await s.pendingHeads(10)).map((h) => [h.documentId, h.seq])).toEqual([["b", 3]]);
+      expect(await s.pendingEntries()).toBe(1);
+      await s.close();
+    });
+
+    it("reserves checkpoints in order, once, with the right previous hash", async () => {
+      const s = await make();
+      await s.appendUpdates("a", [upd(1)]);
+      const heads = await s.pendingHeads(10);
+      expect(await s.reserveCheckpoint(checkpoint(2, ZERO_HASH, heads))).toBe(false); // skips n = 1
+      expect(await s.reserveCheckpoint(checkpoint(1, new Uint8Array(32).fill(1), heads))).toBe(false); // wrong prev
+      expect(await s.pendingEntries()).toBe(1); // a refused reservation advanced nothing
+      const first = checkpoint(1, ZERO_HASH, heads);
+      expect(await s.reserveCheckpoint(first)).toBe(true);
+      expect(await s.reserveCheckpoint(first)).toBe(false); // n is never reused
+      await s.appendUpdates("a", [upd(2)]);
+      expect(await s.reserveCheckpoint(checkpoint(2, new Uint8Array(32).fill(7), await s.pendingHeads(10)))).toBe(false);
+      expect(await s.reserveCheckpoint(checkpoint(2, first.hash, await s.pendingHeads(10)))).toBe(true);
+      expect((await s.listCheckpoints(0, 10)).map((c) => c.n)).toEqual([1, 2]);
+      expect((await s.listCheckpoints(1, 10)).map((c) => c.n)).toEqual([2]);
+      await s.close();
+    });
+
+    it("refuses a checkpoint that attests a head ahead of the log, and advances nothing", async () => {
+      const s = await make();
+      await s.appendUpdates("a", [upd(1)]);
+      const bad = [
+        { documentId: "a", seq: 1, headHash: new Uint8Array(32) },
+        { documentId: "a-ghost", seq: 1, headHash: new Uint8Array(32) },
+      ];
+      expect(await s.reserveCheckpoint(checkpoint(1, ZERO_HASH, bad))).toBe(false);
+      expect(await s.reserveCheckpoint(checkpoint(1, ZERO_HASH, [{ documentId: "a", seq: 2, headHash: new Uint8Array(32) }]))).toBe(false);
+      expect(await s.pendingEntries()).toBe(1);
+      expect(await s.lastCheckpoint()).toBeUndefined();
+      await s.close();
+    });
+
+    it("tracks uploads separately and never loses a reserved checkpoint", async () => {
+      const s = await make();
+      await s.appendUpdates("a", [upd(1)]);
+      await s.reserveCheckpoint(checkpoint(1, ZERO_HASH, await s.pendingHeads(10)));
+      expect((await s.unuploadedCheckpoints(10)).map((c) => c.n)).toEqual([1]);
+      await s.markCheckpointUploaded(1, 5);
+      await s.markCheckpointUploaded(1, 9); // idempotent; the first time stands
+      expect(await s.unuploadedCheckpoints(10)).toEqual([]);
+      expect((await s.lastCheckpoint())?.uploadedAtMs).toBe(5);
       await s.close();
     });
 

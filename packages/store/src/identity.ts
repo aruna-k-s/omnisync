@@ -34,6 +34,14 @@ export interface CertificateRecord {
   readonly notAfterMs: number;
   readonly revokedAtMs?: number;
   readonly revokeReason?: string;
+  /** The issuer-signed certificate bytes, kept so an auditor can verify the chain offline. Absent on rows from before week 6. */
+  readonly certificate?: Uint8Array;
+}
+
+export interface DocumentRecord {
+  readonly id: string;
+  readonly createdBy: string;
+  readonly createdAtMs: number;
 }
 
 export interface Grant {
@@ -98,6 +106,16 @@ export interface IdentityStore {
   getCertificate(serial: Uint8Array): Promise<CertificateRecord | undefined>;
   /** True if this call revoked it; false if it was already revoked or unknown. */
   revokeCertificate(serial: Uint8Array, atMs: number, reason: string, audit: AuditInput): Promise<boolean>;
+
+  /**
+   * Registers a document and makes `createdBy` its admin, with one audit event, atomically.
+   * Returns false, changing nothing, if the id is already registered.
+   */
+  createDocument(id: string, createdBy: string, atMs: number, audit: AuditInput): Promise<boolean>;
+  getDocument(id: string): Promise<DocumentRecord | undefined>;
+
+  /** Certificates in ascending serial order, serial > `after` when given. For ledger export. */
+  listCertificates(after: Uint8Array | undefined, limit: number): Promise<CertificateRecord[]>;
 
   /** Creates or changes a grant. */
   setGrant(

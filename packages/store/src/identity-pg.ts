@@ -7,6 +7,7 @@ import type {
   AuthorizeQuery,
   AuthorizeResult,
   CertificateRecord,
+  DocumentRecord,
   Grant,
   GrantGuard,
   IdentityStore,
@@ -36,6 +37,31 @@ const principalOf = (r: PrincipalRow): Principal => ({
   displayName: r.display_name,
   orgRole: r.org_role,
   ...(r.disabled_at !== null ? { disabledAtMs: Number(r.disabled_at) } : {}),
+});
+
+interface CertRow {
+  serial: Buffer;
+  principal_id: string;
+  key_id: Buffer;
+  public_key: Buffer;
+  issued_at: string;
+  not_before: string;
+  not_after: string;
+  revoked_at: string | null;
+  revoke_reason: string | null;
+  certificate: Buffer | null;
+}
+const certOf = (row: CertRow): CertificateRecord => ({
+  serial: toBytes(row.serial),
+  principalId: row.principal_id,
+  keyId: toBytes(row.key_id),
+  publicKey: toBytes(row.public_key),
+  issuedAtMs: Number(row.issued_at),
+  notBeforeMs: Number(row.not_before),
+  notAfterMs: Number(row.not_after),
+  ...(row.revoked_at !== null ? { revokedAtMs: Number(row.revoked_at) } : {}),
+  ...(row.revoke_reason !== null ? { revokeReason: row.revoke_reason } : {}),
+  ...(row.certificate !== null ? { certificate: toBytes(row.certificate) } : {}),
 });
 
 /** PostgreSQL IdentityStore on the same pool (and schema) as PgDocumentStore. */
@@ -82,39 +108,47 @@ export class PgIdentityStore implements IdentityStore {
   async recordCertificate(rec: CertificateRecord, audit: AuditInput): Promise<void> {
     await this.#tx(async (c) => {
       await c.query(
-        `INSERT INTO certificates (serial, principal_id, key_id, public_key, issued_at, not_before, not_after)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [buf(rec.serial), rec.principalId, buf(rec.keyId), buf(rec.publicKey), rec.issuedAtMs, rec.notBeforeMs, rec.notAfterMs],
+        `INSERT INTO certificates (serial, principal_id, key_id, public_key, issued_at, not_before, not_after, certificate)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          buf(rec.serial), rec.principalId, buf(rec.keyId), buf(rec.publicKey), rec.issuedAtMs, rec.notBeforeMs, rec.notAfterMs,
+          rec.certificate ? buf(rec.certificate) : null,
+        ],
       );
       await this.#audit(c, audit);
     });
   }
 
   async getCertificate(serial: Uint8Array): Promise<CertificateRecord | undefined> {
-    const r = await this.#query<{
-      serial: Buffer;
-      principal_id: string;
-      key_id: Buffer;
-      public_key: Buffer;
-      issued_at: string;
-      not_before: string;
-      not_after: string;
-      revoked_at: string | null;
-      revoke_reason: string | null;
-    }>("SELECT * FROM certificates WHERE serial = $1", [buf(serial)]);
+    const r = await this.#query<CertRow>("SELECT * FROM certificates WHERE serial = $1", [buf(serial)]);
+    return r.rows[0] ? certOf(r.rows[0]) : undefined;
+  }
+
+  async listCertificates(after: Uint8Array | undefined, limit: number): Promise<CertificateRecord[]> {
+    const r = await this.#query<CertRow>(
+      "SELECT * FROM certificates WHERE ($1::bytea IS NULL OR serial > $1::bytea) ORDER BY serial LIMIT $2",
+      [after ? buf(after) : null, limit],
+    );
+    return r.rows.map(certOf);
+  }
+
+  async createDocument(id: string, createdBy: string, atMs: number, audit: AuditInput): Promise<boolean> {
+    return this.#tx(async (c) => {
+      const ins = await c.query("INSERT INTO document_registry (id, created_by, created_at_ms) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", [id, createdBy, atMs]);
+      if (ins.rowCount !== 1) return false;
+      await c.query(
+        "INSERT INTO document_grants (document_id, principal_id, role, granted_by, granted_at) VALUES ($1, $2, 'admin', $2, $3)",
+        [id, createdBy, atMs],
+      );
+      await this.#audit(c, audit);
+      return true;
+    });
+  }
+
+  async getDocument(id: string): Promise<DocumentRecord | undefined> {
+    const r = await this.#query<{ id: string; created_by: string; created_at_ms: string }>("SELECT * FROM document_registry WHERE id = $1", [id]);
     const row = r.rows[0];
-    if (!row) return undefined;
-    return {
-      serial: toBytes(row.serial),
-      principalId: row.principal_id,
-      keyId: toBytes(row.key_id),
-      publicKey: toBytes(row.public_key),
-      issuedAtMs: Number(row.issued_at),
-      notBeforeMs: Number(row.not_before),
-      notAfterMs: Number(row.not_after),
-      ...(row.revoked_at !== null ? { revokedAtMs: Number(row.revoked_at) } : {}),
-      ...(row.revoke_reason !== null ? { revokeReason: row.revoke_reason } : {}),
-    };
+    return row ? { id: row.id, createdBy: row.created_by, createdAtMs: Number(row.created_at_ms) } : undefined;
   }
 
   async revokeCertificate(serial: Uint8Array, atMs: number, reason: string, audit: AuditInput): Promise<boolean> {

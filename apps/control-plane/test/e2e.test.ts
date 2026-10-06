@@ -1,8 +1,10 @@
 import { randomBytes } from "node:crypto";
 import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Gateway, GatewayClient } from "@omnisync/gateway";
-import { decodeFrame } from "@omnisync/protocol";
+import { ledgerSignerFromKeyPair } from "@omnisync/crypto";
+import { CheckpointWriter, Gateway, GatewayClient, exportLedger } from "@omnisync/gateway";
+import { decodeFrame, generateKeyPair } from "@omnisync/protocol";
+import { verifyLedger } from "@omnisync/verifier";
 import {
   MemoryDocumentStore,
   MemoryIdentityStore,
@@ -12,6 +14,7 @@ import {
   migrate,
   type DocumentStore,
   type IdentityStore,
+  type LedgerStore,
 } from "@omnisync/store";
 import { OpenIdLogin } from "../src/index.js";
 import { FakeIdp } from "./fake-idp.js";
@@ -135,6 +138,21 @@ describe.each(kinds)("login to edit, end to end (%s store)", (kind) => {
     expect(whoWrote).toEqual(["alice@example.com", "bob@example.com"]);
     const audit = await plane.identity.listAudit(0, 500);
     expect(audit.filter((e) => e.action === "cert.issue").map((e) => e.target)).toEqual(expect.arrayContaining([a.serial, b.serial, r.serial]));
+
+    // The same two edits, checked by someone who trusts only two public keys and has no database.
+    const ledgerKey = generateKeyPair(new Uint8Array(32).fill(201));
+    await new CheckpointWriter({
+      store: docs as unknown as LedgerStore,
+      objects: new MemoryObjectStore(),
+      tenant: "acme",
+      signer: ledgerSignerFromKeyPair(ledgerKey),
+      now: clock.now,
+    }).flush();
+    const lines: string[] = [];
+    await exportLedger({ docs: docs as never, identity: plane.identity, tenant: "acme", now: clock.now }, (l) => void lines.push(l));
+    const report = await verifyLedger(lines.map((l) => JSON.parse(l) as unknown), { issuers: [issuerKey.publicKey], ledgerKeys: [ledgerKey.publicKey] });
+    expect(report.violations).toEqual([]);
+    expect(report.counts).toMatchObject({ documents: 1, entries: 2, checkpoints: 1, entriesAfterLastCheckpoint: 0 });
 
     // Alice revokes Bob's laptop through the API: his open connection dies within a poll interval.
     const org = await plane.login(person("root"));

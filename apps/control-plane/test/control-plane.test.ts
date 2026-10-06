@@ -174,6 +174,7 @@ describe("control plane", () => {
       expect(body.serial).toBe(Buffer.from(v.certificate.serial).toString("hex"));
       const rec = await p.identity.getCertificate(v.certificate.serial);
       expect(rec).toMatchObject({ principalId: a.id });
+      expect(Buffer.from(rec?.certificate ?? new Uint8Array()).equals(Buffer.from(bytes))).toBe(true); // exact signed bytes kept for the ledger export
       const audit = await p.identity.listAudit(0, 50);
       expect(audit.find((e) => e.action === "cert.issue")).toMatchObject({ actor: a.id, target: body.serial });
     });
@@ -263,7 +264,8 @@ describe("control plane", () => {
       const a = await p.login(alice);
       const b = await p.login(bob);
       const { id } = (await p.call(a.token, "POST", "/v1/documents")).json<{ id: string }>();
-      expect(id).toMatch(/^[A-Za-z0-9_-]{22}$/);
+      expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(await p.identity.getDocument(id)).toMatchObject({ id, createdBy: a.id }); // registered
 
       const list = (await p.call(a.token, "GET", `/v1/documents/${id}/grants`)).json<{ grants: { principalId: string; role: string }[] }>();
       expect(list.grants).toMatchObject([{ principalId: a.id, role: "admin" }]);
@@ -288,7 +290,7 @@ describe("control plane", () => {
       // Bob can edit but may not manage access; strangers and writers get the same answer as for a missing document.
       expect((await p.call(b.token, "GET", `/v1/documents/${id}/grants`)).statusCode).toBe(404);
       expect((await p.call(b.token, "PUT", `/v1/documents/${id}/grants/${b.id}`, { role: "admin" })).statusCode).toBe(404);
-      expect((await p.call(b.token, "GET", "/v1/documents/does-not-exist/grants")).statusCode).toBe(404);
+      expect((await p.call(b.token, "GET", "/v1/documents/0b6f0f0e-7d2c-4c5e-9b0a-1f2e3d4c5b6a/grants")).statusCode).toBe(404);
       expect((await p.call(b.token, "GET", "/v1/documents/bad%20id/grants")).statusCode).toBe(400);
     });
 

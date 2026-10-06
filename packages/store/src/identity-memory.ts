@@ -6,6 +6,7 @@ import type {
   AuthorizeQuery,
   AuthorizeResult,
   CertificateRecord,
+  DocumentRecord,
   Grant,
   GrantGuard,
   IdentityStore,
@@ -22,6 +23,7 @@ export class MemoryIdentityStore implements IdentityStore {
   readonly #certs = new Map<string, CertificateRecord>();
   readonly #grants = new Map<string, Grant>();
   readonly #audit: AuditEvent[] = [];
+  readonly #documents = new Map<string, DocumentRecord>();
 
   #log(a: AuditInput): void {
     this.#audit.push({ ...a, detail: a.detail ?? "", id: this.#audit.length + 1 });
@@ -73,7 +75,13 @@ export class MemoryIdentityStore implements IdentityStore {
     if (!this.#principals.has(record.principalId)) throw new Error("unknown principal");
     const k = hex(record.serial);
     if (this.#certs.has(k)) throw new Error("certificate serial already recorded");
-    this.#certs.set(k, { ...record, serial: record.serial.slice(), keyId: record.keyId.slice(), publicKey: record.publicKey.slice() });
+    this.#certs.set(k, {
+      ...record,
+      serial: record.serial.slice(),
+      keyId: record.keyId.slice(),
+      publicKey: record.publicKey.slice(),
+      ...(record.certificate ? { certificate: record.certificate.slice() } : {}),
+    });
     this.#log(audit);
   }
 
@@ -88,6 +96,28 @@ export class MemoryIdentityStore implements IdentityStore {
     this.#certs.set(k, { ...c, revokedAtMs: atMs, revokeReason: reason });
     this.#log(audit);
     return true;
+  }
+
+  async listCertificates(after: Uint8Array | undefined, limit: number): Promise<CertificateRecord[]> {
+    const floor = after === undefined ? undefined : hex(after);
+    return [...this.#certs.entries()]
+      .filter(([k]) => floor === undefined || k > floor)
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .slice(0, limit)
+      .map(([, c]) => c);
+  }
+
+  async createDocument(id: string, createdBy: string, atMs: number, audit: AuditInput): Promise<boolean> {
+    if (this.#documents.has(id)) return false;
+    if (!this.#principals.has(createdBy)) throw new Error("unknown principal");
+    this.#documents.set(id, { id, createdBy, createdAtMs: atMs });
+    this.#grants.set(`${id}\n${createdBy}`, { documentId: id, principalId: createdBy, role: "admin", grantedBy: createdBy, grantedAtMs: atMs });
+    this.#log(audit);
+    return true;
+  }
+
+  async getDocument(id: string): Promise<DocumentRecord | undefined> {
+    return this.#documents.get(id);
   }
 
   #assertAnotherAdmin(documentId: string, excluding: string): void {

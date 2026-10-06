@@ -16,7 +16,8 @@
     "test": "vitest run",
     "dev": "tsx src/main.ts",
     "start": "node dist/main.js",
-    "serve": "node dist/serve.js"
+    "serve": "node dist/serve.js",
+    "export": "node dist/export-cli.js"
   },
   "dependencies": {
     "@omnisync/engine": "workspace:*",
@@ -24,7 +25,8 @@
     "ws": "^8.22.0",
     "yjs": "^13.6.33",
     "@omnisync/store": "workspace:*",
-    "@omnisync/crypto": "workspace:*"
+    "@omnisync/crypto": "workspace:*",
+    "@omnisync/verifier": "workspace:*"
   },
   "devDependencies": {
     "@omnisync/config": "workspace:*",

@@ -4,6 +4,7 @@ import type {
   AuthorizeQuery,
   AuthorizeResult,
   CertificateRecord,
+  DocumentRecord,
   Grant,
   GrantGuard,
   IdentityStore,
@@ -14,10 +15,14 @@ import {
   StoreUnavailableError,
   type AppendResult,
   type DocumentStore,
+  type LedgerStore,
+  type NewCheckpoint,
   type NewSnapshot,
   type NewUpdate,
   type ObjectStore,
+  type PendingHead,
   type SnapshotMeta,
+  type StoredCheckpoint,
   type StoredUpdate,
 } from "./types.js";
 
@@ -26,7 +31,7 @@ import {
  * calls fail on demand, like a database that is down or an object store that
  * is timing out.
  */
-export class FaultyDocumentStore implements DocumentStore {
+export class FaultyDocumentStore implements DocumentStore, LedgerStore {
   /** While true every call fails. */
   down = false;
   /** Fail the next N calls, then recover. */
@@ -72,6 +77,43 @@ export class FaultyDocumentStore implements DocumentStore {
   }
   close(): Promise<void> {
     return this.inner.close();
+  }
+
+  // Ledger calls pass straight through the same gate, so an outage covers checkpoints too.
+  async pendingHeads(limit: number): Promise<PendingHead[]> {
+    await this.#gate();
+    return this.#ledger().pendingHeads(limit);
+  }
+  async pendingEntries(): Promise<number> {
+    await this.#gate();
+    return this.#ledger().pendingEntries();
+  }
+  async lastCheckpoint(): Promise<StoredCheckpoint | undefined> {
+    await this.#gate();
+    return this.#ledger().lastCheckpoint();
+  }
+  async reserveCheckpoint(cp: NewCheckpoint): Promise<boolean> {
+    await this.#gate();
+    return this.#ledger().reserveCheckpoint(cp);
+  }
+  async markCheckpointUploaded(n: number, atMs: number): Promise<void> {
+    await this.#gate();
+    return this.#ledger().markCheckpointUploaded(n, atMs);
+  }
+  async unuploadedCheckpoints(limit: number): Promise<StoredCheckpoint[]> {
+    await this.#gate();
+    return this.#ledger().unuploadedCheckpoints(limit);
+  }
+  async listCheckpoints(afterN: number, limit: number): Promise<StoredCheckpoint[]> {
+    await this.#gate();
+    return this.#ledger().listCheckpoints(afterN, limit);
+  }
+  async listDocuments(after: string | undefined, limit: number): Promise<string[]> {
+    await this.#gate();
+    return this.#ledger().listDocuments(after, limit);
+  }
+  #ledger(): LedgerStore {
+    return this.inner as unknown as LedgerStore;
   }
 }
 
@@ -136,6 +178,18 @@ export class FaultyIdentityStore implements IdentityStore {
   async revokeCertificate(serial: Uint8Array, atMs: number, reason: string, a: AuditInput): Promise<boolean> {
     this.#gate();
     return this.inner.revokeCertificate(serial, atMs, reason, a);
+  }
+  async createDocument(id: string, by: string, atMs: number, a: AuditInput): Promise<boolean> {
+    this.#gate();
+    return this.inner.createDocument(id, by, atMs, a);
+  }
+  async getDocument(id: string): Promise<DocumentRecord | undefined> {
+    this.#gate();
+    return this.inner.getDocument(id);
+  }
+  async listCertificates(after: Uint8Array | undefined, limit: number): Promise<CertificateRecord[]> {
+    this.#gate();
+    return this.inner.listCertificates(after, limit);
   }
   async setGrant(d: string, p: string, role: Role, by: string, atMs: number, a: AuditInput, g?: GrantGuard): Promise<void> {
     this.#gate();

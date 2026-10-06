@@ -1,11 +1,16 @@
 import pg from "pg";
+import { ZERO_HASH, chainFields, validateBatch } from "./ledger.js";
 import {
   StoreUnavailableError,
   type AppendResult,
   type DocumentStore,
+  type LedgerStore,
+  type NewCheckpoint,
   type NewSnapshot,
   type NewUpdate,
+  type PendingHead,
   type SnapshotMeta,
+  type StoredCheckpoint,
   type StoredUpdate,
 } from "./types.js";
 
@@ -27,7 +32,7 @@ const buf = (b: Uint8Array): Buffer => Buffer.from(b.buffer, b.byteOffset, b.byt
  * StoreUnavailableError so the gateway refuses writes it cannot record
  * (spec: "PostgreSQL unavailable").
  */
-export class PgDocumentStore implements DocumentStore {
+export class PgDocumentStore implements DocumentStore, LedgerStore {
   readonly pool: pg.Pool;
 
   constructor(opts: PgStoreOptions) {
@@ -44,17 +49,22 @@ export class PgDocumentStore implements DocumentStore {
 
   async appendUpdates(documentId: string, updates: readonly NewUpdate[]): Promise<AppendResult[]> {
     if (updates.length === 0) return [];
+    validateBatch(updates);
+    const nowMs = Date.now();
     return this.#tx(async (c) => {
       await c.query("INSERT INTO documents (id) VALUES ($1) ON CONFLICT DO NOTHING", [documentId]);
-      // The row lock serialises writers of one document and allocates gapless seqs.
-      const head = await c.query<{ head_seq: string }>("SELECT head_seq FROM documents WHERE id = $1 FOR UPDATE", [
-        documentId,
-      ]);
+      // The row lock serialises writers of one document, allocates gapless seqs and fixes the chain's previous hash.
+      const head = await c.query<{ head_seq: string; head_hash: Buffer }>(
+        "SELECT head_seq, head_hash FROM documents WHERE id = $1 FOR UPDATE",
+        [documentId],
+      );
       let seq = Number(head.rows[0]?.head_seq ?? 0);
+      let headHash = head.rows[0] ? toBytes(head.rows[0].head_hash) : ZERO_HASH.slice();
       const start = seq;
       const results: AppendResult[] = [];
       for (const u of updates) {
         const keyId = buf(u.keyId);
+        const chain = chainFields(documentId, seq + 1, headHash, u, nowMs);
         // One statement: advance the replay high-water mark and, only if it advanced, insert the row.
         const r = await c.query(
           `WITH hw AS (
@@ -63,13 +73,19 @@ export class PgDocumentStore implements DocumentStore {
              ON CONFLICT (document_id, key_id, session_id)
              DO UPDATE SET last_seq = EXCLUDED.last_seq WHERE update_sessions.last_seq < EXCLUDED.last_seq
              RETURNING 1)
-           INSERT INTO document_updates (document_id, seq, key_id, session_id, client_seq, frame, cert_serial)
-           SELECT $1, $5, $2, $3, $4, $6, $7 FROM hw`,
-          [documentId, keyId, u.sessionId, u.clientSeq, seq + 1, buf(u.frame), u.certSerial ? buf(u.certSerial) : null],
+           INSERT INTO document_updates
+             (document_id, seq, key_id, session_id, client_seq, frame, cert_serial,
+              received_at_ms, key_epoch, prev_hash, entry_hash, frame_hash, payload_hash)
+           SELECT $1, $5, $2, $3, $4, $6, $7, $8, $9, $10, $11, $12, $13 FROM hw`,
+          [
+            documentId, keyId, u.sessionId, u.clientSeq, seq + 1, buf(u.frame), u.certSerial ? buf(u.certSerial) : null,
+            chain.receivedAtMs, chain.keyEpoch, buf(chain.prevHash), buf(chain.entryHash), buf(chain.frameHash), buf(chain.payloadHash),
+          ],
         );
         if (r.rowCount === 1) {
           seq++;
-          results.push({ status: "appended", seq });
+          headHash = chain.entryHash;
+          results.push({ status: "appended", seq, entryHash: chain.entryHash.slice() });
           continue;
         }
         const existing = await c.query(
@@ -78,20 +94,37 @@ export class PgDocumentStore implements DocumentStore {
         );
         results.push({ status: existing.rowCount === 1 ? "duplicate" : "replay" });
       }
-      if (seq !== start) await c.query("UPDATE documents SET head_seq = $2 WHERE id = $1", [documentId, seq]);
+      if (seq !== start) await c.query("UPDATE documents SET head_seq = $2, head_hash = $3 WHERE id = $1", [documentId, seq, buf(headHash)]);
       return results;
     });
   }
 
   async readUpdates(documentId: string, afterSeq: number, limit: number): Promise<StoredUpdate[]> {
-    const r = await this.#query<{ seq: string; frame: Buffer; cert_serial: Buffer | null }>(
-      "SELECT seq, frame, cert_serial FROM document_updates WHERE document_id = $1 AND seq > $2 ORDER BY seq LIMIT $3",
+    const r = await this.#query<{
+      seq: string;
+      frame: Buffer;
+      cert_serial: Buffer | null;
+      received_at_ms: string;
+      key_epoch: number;
+      prev_hash: Buffer;
+      entry_hash: Buffer;
+      frame_hash: Buffer;
+      payload_hash: Buffer;
+    }>(
+      `SELECT seq, frame, cert_serial, received_at_ms, key_epoch, prev_hash, entry_hash, frame_hash, payload_hash
+         FROM document_updates WHERE document_id = $1 AND seq > $2 ORDER BY seq LIMIT $3`,
       [documentId, afterSeq, limit],
     );
     return r.rows.map((row) => ({
       seq: Number(row.seq),
       frame: toBytes(row.frame),
       ...(row.cert_serial ? { certSerial: toBytes(row.cert_serial) } : {}),
+      receivedAtMs: Number(row.received_at_ms),
+      keyEpoch: row.key_epoch,
+      prevHash: toBytes(row.prev_hash),
+      entryHash: toBytes(row.entry_hash),
+      frameHash: toBytes(row.frame_hash),
+      payloadHash: toBytes(row.payload_hash),
     }));
   }
 
@@ -137,6 +170,85 @@ export class PgDocumentStore implements DocumentStore {
     }));
   }
 
+  // ----- LedgerStore ------------------------------------------------------
+
+  async pendingHeads(limit: number): Promise<PendingHead[]> {
+    const r = await this.#query<{ id: string; head_seq: string; head_hash: Buffer }>(
+      `SELECT id, head_seq, head_hash FROM documents WHERE head_seq > checkpoint_seq
+        ORDER BY id COLLATE "C" LIMIT $1`,
+      [limit],
+    );
+    return r.rows.map((row) => ({ documentId: row.id, seq: Number(row.head_seq), headHash: toBytes(row.head_hash) }));
+  }
+
+  async pendingEntries(): Promise<number> {
+    const r = await this.#query<{ n: string }>("SELECT COALESCE(SUM(head_seq - checkpoint_seq), 0) AS n FROM documents", []);
+    return Number(r.rows[0]?.n ?? 0);
+  }
+
+  async lastCheckpoint(): Promise<StoredCheckpoint | undefined> {
+    const r = await this.#query<CheckpointRow>(CHECKPOINT_SELECT + " ORDER BY c.n DESC LIMIT 1", []);
+    return r.rows[0] ? checkpointOf(r.rows[0]) : undefined;
+  }
+
+  async reserveCheckpoint(cp: NewCheckpoint): Promise<boolean> {
+    return this.#tx(async (c) => {
+      // One reservation at a time; the second writer re-reads the new last checkpoint and refuses.
+      await c.query("SELECT pg_advisory_xact_lock($1)", [CHECKPOINT_LOCK]);
+      const last = await c.query<{ n: string; checkpoint_hash: Buffer }>(
+        "SELECT n, checkpoint_hash FROM ledger_checkpoints ORDER BY n DESC LIMIT 1",
+      );
+      const lastN = Number(last.rows[0]?.n ?? 0);
+      const lastHash = last.rows[0] ? toBytes(last.rows[0].checkpoint_hash) : ZERO_HASH;
+      if (cp.n !== lastN + 1 || !buf(cp.prevHash).equals(buf(lastHash))) return false;
+      if (cp.heads.length > 0) {
+        const ids = cp.heads.map((h) => h.documentId);
+        const seqs = cp.heads.map((h) => h.seq);
+        // Heads only grow, so a head that is within the log now stays within it. Refuse anything ahead of the log.
+        const ok = await c.query(
+          `SELECT count(*)::int AS n FROM documents d JOIN unnest($1::text[], $2::bigint[]) AS v(id, seq)
+             ON d.id = v.id AND v.seq <= d.head_seq`,
+          [ids, seqs],
+        );
+        if ((ok.rows[0] as { n: number }).n !== cp.heads.length) return false;
+        await c.query(
+          `UPDATE documents d SET checkpoint_seq = GREATEST(d.checkpoint_seq, v.seq)
+             FROM unnest($1::text[], $2::bigint[]) AS v(id, seq) WHERE d.id = v.id`,
+          [ids, seqs],
+        );
+      }
+      await c.query("INSERT INTO ledger_checkpoints (n, created_at_ms, checkpoint_hash, bytes) VALUES ($1, $2, $3, $4)", [
+        cp.n,
+        cp.createdAtMs,
+        buf(cp.hash),
+        buf(cp.bytes),
+      ]);
+      return true;
+    });
+  }
+
+  async markCheckpointUploaded(n: number, atMs: number): Promise<void> {
+    await this.#query("INSERT INTO ledger_checkpoint_uploads (n, uploaded_at_ms) VALUES ($1, $2) ON CONFLICT DO NOTHING", [n, atMs]);
+  }
+
+  async unuploadedCheckpoints(limit: number): Promise<StoredCheckpoint[]> {
+    const r = await this.#query<CheckpointRow>(CHECKPOINT_SELECT + " WHERE u.n IS NULL ORDER BY c.n LIMIT $1", [limit]);
+    return r.rows.map(checkpointOf);
+  }
+
+  async listCheckpoints(afterN: number, limit: number): Promise<StoredCheckpoint[]> {
+    const r = await this.#query<CheckpointRow>(CHECKPOINT_SELECT + " WHERE c.n > $1 ORDER BY c.n LIMIT $2", [afterN, limit]);
+    return r.rows.map(checkpointOf);
+  }
+
+  async listDocuments(after: string | undefined, limit: number): Promise<string[]> {
+    const r = await this.#query<{ id: string }>(
+      `SELECT id FROM documents WHERE ($1::text IS NULL OR id COLLATE "C" > $1::text COLLATE "C") ORDER BY id COLLATE "C" LIMIT $2`,
+      [after ?? null, limit],
+    );
+    return r.rows.map((row) => row.id);
+  }
+
   async ping(): Promise<void> {
     await this.#query("SELECT 1", []);
   }
@@ -178,6 +290,26 @@ export class PgDocumentStore implements DocumentStore {
     }
   }
 }
+
+// Arbitrary constant, distinct from the migration lock.
+const CHECKPOINT_LOCK = 7_040_212;
+
+interface CheckpointRow {
+  n: string;
+  created_at_ms: string;
+  checkpoint_hash: Buffer;
+  bytes: Buffer;
+  uploaded_at_ms: string | null;
+}
+const CHECKPOINT_SELECT = `SELECT c.n, c.created_at_ms, c.checkpoint_hash, c.bytes, u.uploaded_at_ms
+  FROM ledger_checkpoints c LEFT JOIN ledger_checkpoint_uploads u ON u.n = c.n`;
+const checkpointOf = (r: CheckpointRow): StoredCheckpoint => ({
+  n: Number(r.n),
+  createdAtMs: Number(r.created_at_ms),
+  hash: toBytes(r.checkpoint_hash),
+  bytes: toBytes(r.bytes),
+  ...(r.uploaded_at_ms !== null ? { uploadedAtMs: Number(r.uploaded_at_ms) } : {}),
+});
 
 function wrap(e: unknown): StoreUnavailableError {
   if (e instanceof StoreUnavailableError) return e;

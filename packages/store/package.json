@@ -5,15 +5,30 @@
   "license": "UNLICENSED",
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./testing": { "types": "./dist/testing.d.ts", "default": "./dist/testing.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    }
   },
-  "files": ["dist", "migrations"],
+  "files": [
+    "dist",
+    "migrations"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run"
   },
-  "dependencies": { "pg": "^8.23.1" },
-  "devDependencies": { "@omnisync/config": "workspace:*", "@types/pg": "^8.23.1" }
+  "dependencies": {
+    "@omnisync/crypto": "workspace:*",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@omnisync/config": "workspace:*",
+    "@types/pg": "^8.23.1"
+  }
 }

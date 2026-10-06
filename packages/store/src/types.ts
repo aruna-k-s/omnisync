@@ -12,20 +12,31 @@ export interface NewUpdate {
   readonly frame: Uint8Array;
   /** Serial of the certificate the signer authenticated with (16 bytes). Absent for unauthenticated test setups. */
   readonly certSerial?: Uint8Array;
+  /** SHA-256 of the payload bytes as stored (today the frame payload). Chained into the ledger entry. */
+  readonly payloadHash: Uint8Array;
+  /** Gateway receive time. Defaults to the store's clock; the gateway passes its own so tests control it. */
+  readonly receivedAtMs?: number;
 }
 
 export type AppendResult =
   /** Committed at this per-document sequence number. */
-  | { readonly status: "appended"; readonly seq: number }
+  | { readonly status: "appended"; readonly seq: number; readonly entryHash: Uint8Array }
   /** Same signer, session and client seq is already stored: safe to ACK again. */
   | { readonly status: "duplicate" }
   /** Client seq is not above the high-water mark and was never stored: reject. */
   | { readonly status: "replay" };
 
+/** One ledger entry: the signed frame plus the chain fields set when it was appended. */
 export interface StoredUpdate {
   readonly seq: number;
   readonly frame: Uint8Array;
   readonly certSerial?: Uint8Array;
+  readonly receivedAtMs: number;
+  readonly keyEpoch: number;
+  readonly prevHash: Uint8Array;
+  readonly entryHash: Uint8Array;
+  readonly frameHash: Uint8Array;
+  readonly payloadHash: Uint8Array;
 }
 
 export interface SnapshotMeta {
@@ -72,6 +83,55 @@ export interface DocumentStore {
   ping(): Promise<void>;
 
   close(): Promise<void>;
+}
+
+/** A document whose head moved since the last checkpoint covered it. */
+export interface PendingHead {
+  readonly documentId: string;
+  readonly seq: number;
+  readonly headHash: Uint8Array;
+}
+
+export interface StoredCheckpoint {
+  readonly n: number;
+  readonly createdAtMs: number;
+  readonly hash: Uint8Array;
+  /** The whole signed object. */
+  readonly bytes: Uint8Array;
+  readonly uploadedAtMs?: number;
+}
+
+export interface NewCheckpoint {
+  readonly n: number;
+  readonly createdAtMs: number;
+  /** Must equal the hash of checkpoint n-1 (zeros for n = 1) or the reservation is refused. */
+  readonly prevHash: Uint8Array;
+  readonly hash: Uint8Array;
+  readonly bytes: Uint8Array;
+  /** Heads the checkpoint attests; each document's checkpoint_seq advances to its seq. */
+  readonly heads: readonly PendingHead[];
+}
+
+/** Checkpoint bookkeeping and export access (spec: docs/specs/ledger.md). */
+export interface LedgerStore {
+  /** Documents with entries newer than their last checkpoint, ascending by id bytes, at most `limit`. */
+  pendingHeads(limit: number): Promise<PendingHead[]>;
+  /** Total entries not yet covered by any checkpoint. */
+  pendingEntries(): Promise<number>;
+  lastCheckpoint(): Promise<StoredCheckpoint | undefined>;
+  /**
+   * Reserves checkpoint n and advances the covered heads in one transaction.
+   * Returns false, changing nothing, if n is not exactly last+1, the previous hash differs,
+   * or a head is ahead of the log (another writer won, or a bug).
+   */
+  reserveCheckpoint(cp: NewCheckpoint): Promise<boolean>;
+  markCheckpointUploaded(n: number, atMs: number): Promise<void>;
+  /** Reserved but not yet uploaded, oldest first. */
+  unuploadedCheckpoints(limit: number): Promise<StoredCheckpoint[]>;
+  /** Ascending n, n > afterN. */
+  listCheckpoints(afterN: number, limit: number): Promise<StoredCheckpoint[]>;
+  /** Ascending id bytes, id strictly greater than `after` when given. */
+  listDocuments(after: string | undefined, limit: number): Promise<string[]>;
 }
 
 export interface ObjectStore {

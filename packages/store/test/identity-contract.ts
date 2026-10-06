@@ -187,5 +187,38 @@ export function identityStoreContract(name: string, make: () => Promise<Identity
       expect(page.map((e) => e.action)).toEqual(["grant.set", "cert.revoke"]);
       await s.close();
     });
+
+    it("keeps the signed certificate bytes and lists certificates in serial order", async () => {
+      const s = await make();
+      const a = await person(s, "alice");
+      const bytes = new Uint8Array([9, 8, 7]);
+      await s.recordCertificate(cert(3, a.id, { certificate: bytes }), audit("cert.issue"));
+      await s.recordCertificate(cert(1, a.id), audit("cert.issue"));
+      await s.recordCertificate(cert(2, a.id, { certificate: bytes }), audit("cert.issue"));
+      expect([...((await s.getCertificate(serial(3)))?.certificate ?? [])]).toEqual([9, 8, 7]);
+      expect((await s.getCertificate(serial(1)))?.certificate).toBeUndefined();
+      const all = await s.listCertificates(undefined, 10);
+      expect(all.map((x) => x.serial[0])).toEqual([1, 2, 3]);
+      expect((await s.listCertificates(serial(1), 1)).map((x) => x.serial[0])).toEqual([2]);
+      expect(await s.listCertificates(serial(3), 10)).toEqual([]);
+      await s.close();
+    });
+
+    it("registers a document, makes the creator its admin and audits it, atomically and once", async () => {
+      const s = await make();
+      const a = await person(s, "alice");
+      const id = "0b6f0f0e-7d2c-4c5e-9b0a-1f2e3d4c5b6a";
+      expect(await s.getDocument(id)).toBeUndefined();
+      expect(await s.createDocument(id, a.id, NOW, audit("document.create", id))).toBe(true);
+      expect(await s.getDocument(id)).toEqual({ id, createdBy: a.id, createdAtMs: NOW });
+      expect(await s.roleOf(id, a.id)).toBe("admin");
+      expect(await s.createDocument(id, a.id, NOW + 1, audit("document.create", id))).toBe(false);
+      expect((await s.getDocument(id))?.createdAtMs).toBe(NOW);
+      const created = (await s.listAudit(0, 100)).filter((e) => e.action === "document.create");
+      expect(created).toHaveLength(1);
+      await expect(s.createDocument("other", "ghost", NOW, audit("document.create"))).rejects.toThrow();
+      expect(await s.getDocument("other")).toBeUndefined();
+      await s.close();
+    });
   });
 }
