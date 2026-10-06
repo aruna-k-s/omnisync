@@ -16,9 +16,9 @@ export const CHECKPOINT_VERSION = 1;
 const ENTRY_DOMAIN = new TextEncoder().encode("omnisync/v1/ledger-entry\0");
 const CHECKPOINT_DOMAIN = new TextEncoder().encode("omnisync/v1/checkpoint\0");
 const CHECKPOINT_MAGIC = [0x4f, 0x4b] as const;
-const MAX_TENANT_BYTES = 64;
+export const MAX_TENANT_BYTES = 64;
 const MAX_DOC_BYTES = 256;
-const MAX_CHECKPOINT_DOCS = 100_000;
+export const MAX_CHECKPOINT_DOCS = 100_000;
 
 export interface LedgerEntryFields {
   readonly documentId: string;
@@ -33,6 +33,9 @@ export interface LedgerEntryFields {
   readonly frameHash: Uint8Array;
   readonly payloadHash: Uint8Array;
 }
+
+/** Text that does not survive UTF-8 (a lone surrogate) would hash like U+FFFD; refuse it. */
+const wellFormed = (s: string): boolean => new TextDecoder().decode(new TextEncoder().encode(s)) === s;
 
 export const hashBytes = (bytes: Uint8Array): Uint8Array => sha256(bytes);
 
@@ -69,6 +72,7 @@ export function entryHash(f: LedgerEntryFields): Uint8Array {
   if (f.certSerial !== undefined) mustLength("certSerial", f.certSerial, SERIAL_BYTES);
   const doc = new TextEncoder().encode(f.documentId);
   if (doc.length === 0) throw new RangeError("documentId must not be empty");
+  if (!wellFormed(f.documentId)) throw new RangeError("documentId must be well-formed Unicode");
   return sha256(
     concat(
       ENTRY_DOMAIN,
@@ -116,11 +120,13 @@ export interface Checkpoint extends CheckpointBody {
 /** Anything that can sign for the ledger key: a local key today, a KMS call in Phase 2. Never the certificate issuing key. */
 export interface LedgerSigner {
   readonly keyId: Uint8Array;
+  /** The matching public key. The checkpoint writer verifies every signature it gets back before reserving a number. */
+  readonly publicKey: Uint8Array;
   sign(message: Uint8Array): Uint8Array | Promise<Uint8Array>;
 }
 
 export function ledgerSignerFromKeyPair(key: KeyPair): LedgerSigner {
-  return { keyId: key.keyId, sign: (m) => signDetached(m, key.secretKey) };
+  return { keyId: key.keyId, publicKey: key.publicKey, sign: (m) => signDetached(m, key.secretKey) };
 }
 
 export class CheckpointError extends Error {
@@ -137,7 +143,7 @@ function encodeTbs(body: CheckpointBody, ledgerKeyId: Uint8Array): Uint8Array {
   mustLength("ledgerKeyId", ledgerKeyId, KEY_ID_BYTES);
   if (!Number.isSafeInteger(body.n) || body.n < 1) throw new RangeError("n must be a positive integer");
   const tenant = new TextEncoder().encode(body.tenant);
-  if (tenant.length < 1 || tenant.length > MAX_TENANT_BYTES) throw new RangeError("tenant must be 1-64 bytes");
+  if (tenant.length < 1 || tenant.length > MAX_TENANT_BYTES || !wellFormed(body.tenant)) throw new RangeError("tenant must be 1-64 bytes of well-formed Unicode");
   if (body.heads.length > MAX_CHECKPOINT_DOCS) throw new RangeError("too many heads");
   const parts: Uint8Array[] = [];
   const head = new Uint8Array(3 + varintSize(body.n) + varintSize(body.createdAtMs));
@@ -152,7 +158,7 @@ function encodeTbs(body: CheckpointBody, ledgerKeyId: Uint8Array): Uint8Array {
   let last: Uint8Array | undefined;
   for (const h of body.heads) {
     const id = new TextEncoder().encode(h.documentId);
-    if (id.length < 1 || id.length > MAX_DOC_BYTES) throw new RangeError("document id must be 1-256 bytes");
+    if (id.length < 1 || id.length > MAX_DOC_BYTES || !wellFormed(h.documentId)) throw new RangeError("document id must be 1-256 bytes of well-formed Unicode");
     if (last !== undefined && byteOrder(last, id) >= 0) throw new RangeError("heads must be strictly ascending by document id");
     last = id;
     mustLength("headHash", h.headHash, HASH_BYTES);

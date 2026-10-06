@@ -326,8 +326,25 @@ describe("checkpoint", () => {
     expect(() => decodeCheckpoint(bytes)).not.toThrow();
   });
 
+  it("refuses text that is not well-formed Unicode: a lone surrogate would otherwise hash like U+FFFD", async () => {
+    const bad = "doc\ud800";
+    const fixed = "doc\ufffd";
+    expect(new TextEncoder().encode(bad)).toEqual(new TextEncoder().encode(fixed)); // the collision this guards against
+    const fields = { documentId: bad, seq: 1, prevHash: new Uint8Array(32), receivedAtMs: 1, keyEpoch: 0, frameHash: new Uint8Array(32), payloadHash: new Uint8Array(32) };
+    expect(() => entryHash(fields)).toThrow(RangeError);
+    expect(() => entryHash({ ...fields, documentId: fixed })).not.toThrow();
+    await expect(signCheckpoint({ ...body(), tenant: bad }, signer)).rejects.toThrow(RangeError);
+    await expect(signCheckpoint({ ...body(), heads: [{ documentId: bad, seq: 1, headHash: new Uint8Array(32) }] }, signer)).rejects.toThrow(RangeError);
+  });
+
+  it("a ledger signer carries the public key that verifies what it signs", async () => {
+    expect(signer.publicKey).toEqual(ledgerKey.publicKey);
+    const bytes = await signCheckpoint(body(), signer);
+    expect(verifyCheckpoint(bytes, (id) => (Buffer.compare(id, signer.keyId) === 0 ? signer.publicKey : undefined)).ok).toBe(true);
+  });
+
   it("rejects a wrong-length signature from a faulty signer", async () => {
-    await expect(signCheckpoint(body(), { keyId: ledgerKey.keyId, sign: () => new Uint8Array(10) })).rejects.toThrow(CheckpointError);
+    await expect(signCheckpoint(body(), { keyId: ledgerKey.keyId, publicKey: ledgerKey.publicKey, sign: () => new Uint8Array(10) })).rejects.toThrow(CheckpointError);
   });
 });
 

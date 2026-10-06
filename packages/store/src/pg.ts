@@ -1,5 +1,5 @@
 import pg from "pg";
-import { ZERO_HASH, chainFields, validateBatch } from "./ledger.js";
+import { ZERO_HASH, chainFields, reservationIsConsistent, validateBatch } from "./ledger.js";
 import {
   StoreUnavailableError,
   type AppendResult,
@@ -49,7 +49,7 @@ export class PgDocumentStore implements DocumentStore, LedgerStore {
 
   async appendUpdates(documentId: string, updates: readonly NewUpdate[]): Promise<AppendResult[]> {
     if (updates.length === 0) return [];
-    validateBatch(updates);
+    validateBatch(documentId, updates);
     const nowMs = Date.now();
     return this.#tx(async (c) => {
       await c.query("INSERT INTO documents (id) VALUES ($1) ON CONFLICT DO NOTHING", [documentId]);
@@ -195,21 +195,25 @@ export class PgDocumentStore implements DocumentStore, LedgerStore {
     return this.#tx(async (c) => {
       // One reservation at a time; the second writer re-reads the new last checkpoint and refuses.
       await c.query("SELECT pg_advisory_xact_lock($1)", [CHECKPOINT_LOCK]);
-      const last = await c.query<{ n: string; checkpoint_hash: Buffer }>(
-        "SELECT n, checkpoint_hash FROM ledger_checkpoints ORDER BY n DESC LIMIT 1",
+      const last = await c.query<{ n: string; checkpoint_hash: Buffer; created_at_ms: string }>(
+        "SELECT n, checkpoint_hash, created_at_ms FROM ledger_checkpoints ORDER BY n DESC LIMIT 1",
       );
       const lastN = Number(last.rows[0]?.n ?? 0);
       const lastHash = last.rows[0] ? toBytes(last.rows[0].checkpoint_hash) : ZERO_HASH;
       if (cp.n !== lastN + 1 || !buf(cp.prevHash).equals(buf(lastHash))) return false;
-      if (cp.heads.length === 0) return false; // a checkpoint attests something
+      if (cp.heads.length === 0 || !reservationIsConsistent(cp)) return false; // a checkpoint attests something, and says what the row says
+      if (last.rows[0] && cp.createdAtMs < Number(last.rows[0].created_at_ms)) return false;
       const ids = cp.heads.map((h) => h.documentId);
       const seqs = cp.heads.map((h) => h.seq);
-      // Every head must move strictly forward and stay within the log. A stale read (another writer already
-      // covered it) is refused here, under the lock, so no checkpoint ever repeats or regresses a head.
+      const hashes = cp.heads.map((h) => buf(h.headHash));
+      // Every head must move strictly forward, stay within the log and be the real entry's hash. A stale read
+      // (another writer already covered it) is refused here, under the lock, so no checkpoint repeats or regresses a head.
       const ok = await c.query(
-        `SELECT count(*)::int AS n FROM documents d JOIN unnest($1::text[], $2::bigint[]) AS v(id, seq)
-           ON d.id = v.id AND v.seq <= d.head_seq AND v.seq > d.checkpoint_seq`,
-        [ids, seqs],
+        `SELECT count(*)::int AS n
+           FROM unnest($1::text[], $2::bigint[], $3::bytea[]) AS v(id, seq, hash)
+           JOIN documents d ON d.id = v.id AND v.seq <= d.head_seq AND v.seq > d.checkpoint_seq
+           JOIN document_updates u ON u.document_id = v.id AND u.seq = v.seq AND u.entry_hash = v.hash`,
+        [ids, seqs, hashes],
       );
       if ((ok.rows[0] as { n: number }).n !== cp.heads.length) return false;
       await c.query(

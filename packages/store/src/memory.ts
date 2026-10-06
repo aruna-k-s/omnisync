@@ -1,4 +1,4 @@
-import { ZERO_HASH, byIdBytes, chainFields, validateBatch } from "./ledger.js";
+import { ZERO_HASH, byIdBytes, chainFields, reservationIsConsistent, validateBatch } from "./ledger.js";
 import type {
   AppendResult,
   DocumentStore,
@@ -44,7 +44,7 @@ export class MemoryDocumentStore implements DocumentStore, LedgerStore {
   }
 
   async appendUpdates(documentId: string, updates: readonly NewUpdate[]): Promise<AppendResult[]> {
-    validateBatch(updates);
+    validateBatch(documentId, updates);
     const d = this.#doc(documentId);
     return updates.map((u): AppendResult => {
       const sessionKey = `${hex(u.keyId)}:${u.sessionId}`;
@@ -109,10 +109,14 @@ export class MemoryDocumentStore implements DocumentStore, LedgerStore {
     const last = this.#checkpoints[this.#checkpoints.length - 1];
     if (cp.n !== (last?.n ?? 0) + 1) return false;
     if (hex(cp.prevHash) !== hex(last?.hash ?? ZERO_HASH)) return false;
-    if (cp.heads.length === 0) return false;
+    if (cp.heads.length === 0 || !reservationIsConsistent(cp)) return false;
+    if (last && cp.createdAtMs < last.createdAtMs) return false;
     for (const h of cp.heads) {
       const d = this.#docs.get(h.documentId);
       if (!d || h.seq > d.headSeq || h.seq <= d.checkpointSeq) return false;
+      // The attested hash must be the real entry's hash, not just whatever the caller read.
+      const row = d.updates[h.seq - 1];
+      if (!row || Buffer.compare(row.entryHash, h.headHash) !== 0) return false;
     }
     for (const h of cp.heads) {
       const d = this.#docs.get(h.documentId) as DocState;

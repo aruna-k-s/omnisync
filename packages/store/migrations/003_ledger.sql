@@ -7,6 +7,11 @@ BEGIN
   IF EXISTS (SELECT 1 FROM document_updates) THEN
     RAISE EXCEPTION 'migration 003 cannot chain rows written before the ledger existed; export and reset a pre-release database';
   END IF;
+  -- A certificate issued before this migration has no stored bytes, so the entries it signs could never be verified offline.
+  -- Certificates stay usable for 24 h plus the 72 h upload-only grace; wait that out or revoke them first.
+  IF EXISTS (SELECT 1 FROM certificates WHERE not_after + 72 * 3600 * 1000 > (extract(epoch FROM now()) * 1000)::bigint) THEN
+    RAISE EXCEPTION 'migration 003 needs every certificate issued before it to be past its grace period (or revoked): their signed bytes were not stored';
+  END IF;
 END $$;
 
 ALTER TABLE documents
@@ -48,3 +53,15 @@ CREATE TABLE document_registry (
   created_by    text   NOT NULL,
   created_at_ms bigint NOT NULL
 );
+
+-- Checkpoint listing and pending heads sort by UTF-8 bytes (COLLATE "C"); give that order an index whatever the database collation.
+CREATE INDEX documents_id_bytes ON documents (id COLLATE "C");
+
+-- Row triggers do not fire on TRUNCATE. Block it on the tables that must never lose rows.
+CREATE FUNCTION forbid_log_truncate() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END $$;
+CREATE TRIGGER document_updates_no_truncate BEFORE TRUNCATE ON document_updates FOR EACH STATEMENT EXECUTE FUNCTION forbid_log_truncate();
+CREATE TRIGGER audit_events_no_truncate BEFORE TRUNCATE ON audit_events FOR EACH STATEMENT EXECUTE FUNCTION forbid_log_truncate();
+CREATE TRIGGER ledger_checkpoints_no_truncate BEFORE TRUNCATE ON ledger_checkpoints FOR EACH STATEMENT EXECUTE FUNCTION forbid_log_truncate();

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ledgerSignerFromKeyPair } from "@omnisync/crypto";
 import { signUpdate } from "@omnisync/protocol";
 import { verifyLedger, type Report, type ViolationCode } from "../src/index.js";
-import { Fixture, HOUR, T0, issuer, ledger, parse, stranger, trust } from "./fixture.js";
+import { Fixture, HOUR, T0, issuer, ledger, parse, stranger, stranger2, trust } from "./fixture.js";
 
 const codes = (r: Report): ViolationCode[] => [...new Set(r.violations.map((v) => v.code))].sort();
 
@@ -53,9 +53,14 @@ describe("verifier: a healthy ledger", () => {
     const f = await healthy();
     const lines = parse(f.lines()) as Record<string, unknown>[];
     for (const l of lines) if (l.t === "entry" && l.doc === "doc-b") delete l.frame;
-    const r = await verifyLedger(lines, trust);
+    const r = await verifyLedger(lines, trust, { allowErased: true });
     expect(r.ok).toBe(true);
     expect(r.counts.erased).toBe(1);
+    // By default an export with stripped frames is not "verified": nothing says who signed those entries.
+    const strict = await verifyLedger(lines, trust);
+    expect(strict.ok).toBe(false);
+    expect(codes(strict)).toEqual(["frame_erased"]);
+    expect(strict.violations[0]).toMatchObject({ documentId: "doc-b" });
   });
 
   it("works on a streamed async iterable", async () => {
@@ -72,6 +77,137 @@ describe("verifier: a healthy ledger", () => {
     f.append("d", u, { claimedAtMs: T0 + 2 * HOUR - 1000, receivedAtMs: T0 + 40 * HOUR });
     await f.checkpoint();
     expect((await run(f.lines())).violations).toEqual([]);
+  });
+});
+
+describe("verifier: what a pass does and does not mean", () => {
+  it("a consistent export that was not compared with locked checkpoints is ok but not anchored, and says so", async () => {
+    const f = await healthy();
+    const r = await run(f.lines());
+    expect(r.ok).toBe(true);
+    expect(r.anchored).toBe(false);
+    expect(r.lockedChecked).toBe(0);
+    expect(r.warnings.join()).toMatch(/no locked checkpoint copies/);
+  });
+
+  it("is anchored only when locked copies were compared, matched, and exist", async () => {
+    const f = await healthy();
+    const locked = new Map([[1, f.checkpoints[0] as Uint8Array]]);
+    const r = await run(f.lines(), { locked });
+    expect(r.anchored).toBe(true);
+    expect(r.lockedChecked).toBe(1);
+    expect((await run(f.lines(), { locked: new Map() })).anchored).toBe(false); // an empty directory anchors nothing
+    const wrong = new Map([[1, new Uint8Array(f.checkpoints[0] as Uint8Array).fill(0)]]);
+    const bad = await run(f.lines(), { locked: wrong });
+    expect(bad.anchored).toBe(false);
+    expect(codes(bad)).toContain("locked_mismatch");
+  });
+
+  it("no checkpoints means not anchored even if locked copies were supplied", async () => {
+    const f = new Fixture();
+    f.append("d", f.addUser(1));
+    const r = await run(f.lines(), { locked: new Map([[1, new Uint8Array(10)]]) });
+    expect(r.anchored).toBe(false);
+  });
+
+  it("an export with every frame stripped and no checkpoints is not a pass", async () => {
+    const f = new Fixture();
+    const u = f.addUser(1);
+    f.append("d", u);
+    f.append("d", u);
+    const lines = parse(f.lines()) as Record<string, unknown>[];
+    for (const l of lines) if (l.t === "entry") delete l.frame;
+    const r = await verifyLedger(lines, trust);
+    expect(r.ok).toBe(false);
+    expect(r.anchored).toBe(false);
+    expect(codes(r)).toEqual(["frame_erased"]);
+    expect(r.violationsTotal).toBe(2);
+  });
+
+  it("a large locked set does not blow the stack", async () => {
+    const f = await healthy();
+    const locked = new Map<number, Uint8Array>();
+    for (let n = 1; n <= 150_000; n++) locked.set(n, new Uint8Array(1));
+    const r = await run(f.lines(), { locked, maxViolations: 5 });
+    expect(r.violations).toHaveLength(5);
+    expect(r.violationsTotal).toBeGreaterThan(100_000);
+  });
+});
+
+describe("verifier: trust inputs", () => {
+  it("refuses a key that is both an issuer and the ledger key", async () => {
+    const f = await healthy();
+    await expect(verifyLedger(parse(f.lines()), { issuers: [issuer.publicKey, ledger.publicKey], ledgerKeys: [ledger.publicKey] })).rejects.toThrow(RangeError);
+  });
+
+  it("a pinned tenant catches a swapped export; an unpinned one is warned about", async () => {
+    const f = await healthy();
+    expect((await run(f.lines())).warnings.join()).toMatch(/tenant was not pinned/);
+    const ok = await verifyLedger(parse(f.lines()), { ...trust, tenant: "acme" });
+    expect(ok.ok).toBe(true);
+    expect(ok.warnings.join()).not.toMatch(/tenant was not pinned/);
+    const other = await verifyLedger(parse(f.lines()), { ...trust, tenant: "globex" });
+    expect(codes(other)).toContain("tenant_mismatch");
+    expect(codes(other)).toContain("checkpoint_tenant"); // the signed checkpoints say acme too
+  });
+
+  it("an export whose meta record lies about the tenant is caught by the signed checkpoints", async () => {
+    const f = await healthy();
+    const lines = parse(f.lines()) as Record<string, unknown>[];
+    (lines[0] as Record<string, unknown>).tenant = "globex";
+    const r = await verifyLedger(lines, { ...trust, tenant: "globex" });
+    expect(codes(r)).toEqual(["checkpoint_tenant"]);
+  });
+});
+
+describe("verifier: replay and time", () => {
+  it("a repeated or backwards client sequence within one session is a replay", async () => {
+    const f = new Fixture();
+    const u = f.addUser(1);
+    f.append("d", u, { clientSeq: 5 });
+    f.append("d", u, { clientSeq: 5 });
+    f.append("d", u, { clientSeq: 3 });
+    f.append("d", u, { clientSeq: 6 });
+    await f.checkpoint();
+    const r = await run(f.lines());
+    expect(r.violations.filter((v) => v.code === "replay").map((v) => v.seq)).toEqual([2, 3]);
+  });
+
+  it("different sessions, different users and different documents have their own sequences", async () => {
+    const f = new Fixture();
+    const a = f.addUser(1);
+    const b = f.addUser(2);
+    f.append("d1", a, { clientSeq: 1, sessionId: 1 });
+    f.append("d1", a, { clientSeq: 1, sessionId: 2 });
+    f.append("d1", b, { clientSeq: 1, sessionId: 1 });
+    f.append("d2", a, { clientSeq: 1, sessionId: 1 });
+    await f.checkpoint();
+    expect((await run(f.lines())).violations).toEqual([]);
+  });
+
+  it("an entry received after the checkpoint that attests it is a violation, with the clock-skew tolerance", async () => {
+    const mk = async (late: number) => {
+      const f = new Fixture();
+      const u = f.addUser(1);
+      f.append("d", u, { receivedAtMs: T0 + HOUR });
+      f.append("d", u, { receivedAtMs: T0 + 2 * HOUR });
+      await f.checkpoint(undefined, T0 + 2 * HOUR - late);
+      return run(f.lines());
+    };
+    expect((await mk(5 * 60_000)).violations).toEqual([]); // exactly the skew allowance
+    const r = await mk(5 * 60_000 + 1);
+    expect(codes(r)).toEqual(["received_after_checkpoint"]);
+    expect(r.violations[0]).toMatchObject({ documentId: "d", seq: 2 });
+  });
+
+  it("caps stored warnings but counts them all", async () => {
+    const f = new Fixture();
+    const u = f.addUser(1);
+    for (let i = 0; i < 20; i++) f.append("d", u, { receivedAtMs: T0 + HOUR - i * 1000 });
+    await f.checkpoint(undefined, T0 + 2 * HOUR);
+    const r = await run(f.lines(), { maxWarnings: 3 });
+    expect(r.warnings).toHaveLength(3);
+    expect(r.warningsTotal).toBeGreaterThanOrEqual(19);
   });
 });
 
@@ -508,7 +644,7 @@ describe("verifier: properties", () => {
 
   it("is deterministic and independent of the trust-key order", async () => {
     const f = await healthy();
-    const a = await verifyLedger(parse(f.lines()), { issuers: [stranger.publicKey, issuer.publicKey], ledgerKeys: [stranger.publicKey, ledger.publicKey] });
+    const a = await verifyLedger(parse(f.lines()), { issuers: [stranger.publicKey, issuer.publicKey], ledgerKeys: [stranger2.publicKey, ledger.publicKey] });
     const b = await run(f.lines());
     expect(a).toEqual(b);
   });

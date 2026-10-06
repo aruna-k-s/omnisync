@@ -26,7 +26,8 @@ export type ViolationCode =
   | "frame_hash_mismatch"
   | "payload_hash_mismatch"
   | "frame_malformed"
-  | "frame_binding"
+  | "frame_erased"
+  | "replay"
   | "cert_missing"
   | "cert_untrusted"
   | "cert_malformed"
@@ -36,12 +37,14 @@ export type ViolationCode =
   | "claimed_window"
   | "claimed_in_future"
   | "checkpoint_signature"
+  | "tenant_mismatch"
   | "checkpoint_tenant"
   | "checkpoint_gap"
   | "checkpoint_chain"
   | "checkpoint_time"
   | "checkpoint_regress"
   | "checkpoint_head_mismatch"
+  | "received_after_checkpoint"
   | "truncated"
   | "locked_mismatch"
   | "locked_missing"
@@ -64,6 +67,8 @@ export interface TrustInputs {
   readonly graceMs?: number;
   /** Tolerated device clock lead. Default 5 min. */
   readonly maxClockSkewMs?: number;
+  /** The tenant the caller expects. The export's own tenant field is attacker-controlled; this is not. */
+  readonly tenant?: string;
 }
 
 export interface VerifyOptions {
@@ -71,10 +76,26 @@ export interface VerifyOptions {
   readonly locked?: ReadonlyMap<number, Uint8Array>;
   /** Cap on stored violations; the total is always counted. Default 1,000. */
   readonly maxViolations?: number;
+  /** Cap on stored warnings; the total is always counted. Default 1,000. */
+  readonly maxWarnings?: number;
+  /**
+   * Accept entries whose frame was erased (hashes still verify, but the signature cannot be checked).
+   * Off by default: an export with stripped frames must not look the same as a complete one.
+   */
+  readonly allowErased?: boolean;
 }
 
 export interface Report {
+  /** No violations: the export is internally consistent and every signature, certificate and checkpoint checks out. */
   readonly ok: boolean;
+  /**
+   * The export was compared with checkpoint copies from the locked bucket and all of them matched, and at least one
+   * checkpoint exists. Without this, `ok` only says the export is consistent with itself and with the ledger key:
+   * someone who holds the database and the ledger key could have rewritten both.
+   */
+  readonly anchored: boolean;
+  /** Locked checkpoint copies that were compared. */
+  readonly lockedChecked: number;
   readonly tenant?: string;
   readonly exportedAtMs?: number;
   readonly counts: {
@@ -92,6 +113,7 @@ export interface Report {
   /** Total violations found, including those past the stored cap. */
   readonly violationsTotal: number;
   readonly warnings: readonly string[];
+  readonly warningsTotal: number;
 }
 
 type CertState = { readonly ok: true; readonly cert: Certificate } | { readonly ok: false; readonly code: ViolationCode; readonly message: string };
@@ -119,11 +141,21 @@ export async function verifyLedger(
   const violations: Violation[] = [];
   let total = 0;
   const warnings: string[] = [];
+  let warningsTotal = 0;
+  const maxWarnings = opts.maxWarnings ?? 1000;
+  const warn = (m: string): void => {
+    warningsTotal++;
+    if (warnings.length < maxWarnings) warnings.push(m);
+  };
   const add = (v: Violation): void => {
     total++;
     if (violations.length < cap) violations.push(v);
   };
 
+  const issuerHex = new Set(trust.issuers.map(hex));
+  for (const k of trust.ledgerKeys) {
+    if (issuerHex.has(hex(k))) throw new RangeError("a key cannot be both a certificate issuer and the ledger key: they are separate trust inputs");
+  }
   const issuerById = new Map(trust.issuers.map((k) => [hex(keyIdOf(k)), k]));
   const ledgerById = new Map(trust.ledgerKeys.map((k) => [hex(keyIdOf(k)), k]));
   const issuerResolver = (id: Uint8Array) => issuerById.get(hex(id));
@@ -142,13 +174,15 @@ export async function verifyLedger(
   let lastCheckpointAtMs: number | undefined;
   let checkpointCount = 0;
   const exportedCheckpoints = new Map<number, Uint8Array>();
-  /** doc -> (seq -> head hash) attested by some checkpoint, still waiting to meet its entry. */
-  const attested = new Map<string, Map<number, Uint8Array>>();
+  /** doc -> (seq -> head hash and checkpoint time) attested by some checkpoint, still waiting to meet its entry. */
+  const attested = new Map<string, Map<number, { hash: Uint8Array; createdAtMs: number }>>();
   const maxAttested = new Map<string, number>();
 
   // entries
   const docs = new Map<string, DocState>();
   let currentDoc: string | undefined;
+  /** The gateway refuses a (key, session) whose client sequence does not increase; so does the verifier. */
+  const sessions = new Map<string, number>();
   const finished = new Set<string>();
   let entries = 0;
   let erased = 0;
@@ -169,6 +203,9 @@ export async function verifyLedger(
       phase = "certs";
       tenant = rec.tenant;
       exportedAtMs = rec.exportedAtMs;
+      if (trust.tenant !== undefined && rec.tenant !== trust.tenant) {
+        add({ code: "tenant_mismatch", message: `the export is for tenant ${JSON.stringify(rec.tenant)}, expected ${JSON.stringify(trust.tenant)}` });
+      }
       if (rec.version !== EXPORT_VERSION) add({ code: "export_version", message: `unsupported export version ${rec.version}` });
       continue;
     }
@@ -216,7 +253,7 @@ export async function verifyLedger(
       const cp = v.checkpoint;
       checkpointCount++;
       exportedCheckpoints.set(cp.n, rec.bytes);
-      if (tenant !== undefined && cp.tenant !== tenant) add({ code: "checkpoint_tenant", message: `checkpoint ${cp.n} is for tenant ${cp.tenant}`, n: cp.n });
+      if ((trust.tenant ?? tenant) !== undefined && cp.tenant !== (trust.tenant ?? tenant)) add({ code: "checkpoint_tenant", message: `checkpoint ${cp.n} is for tenant ${cp.tenant}`, n: cp.n });
       if (cp.n !== nextN) {
         add({ code: "checkpoint_gap", message: `expected checkpoint ${nextN}, found ${cp.n}`, n: cp.n });
       }
@@ -234,7 +271,7 @@ export async function verifyLedger(
         maxAttested.set(h.documentId, Math.max(prevMax, h.seq));
         let m = attested.get(h.documentId);
         if (!m) attested.set(h.documentId, (m = new Map()));
-        m.set(h.seq, h.headHash);
+        m.set(h.seq, { hash: h.headHash, createdAtMs: cp.createdAtMs });
       }
       continue;
     }
@@ -245,6 +282,7 @@ export async function verifyLedger(
     checkEntry(rec);
   }
   if (phase === "start") add({ code: "export_order", message: "export is empty" });
+  if (trust.tenant === undefined) warn("the tenant was not pinned: this export was only checked against its own tenant field");
 
   // ----- after the stream: checkpoints against what the export holds ------------
   let afterLast = 0;
@@ -264,22 +302,32 @@ export async function verifyLedger(
     }
   }
 
+  let lockedProblems = 0;
+  const lockedAdd = (v: Violation): void => {
+    lockedProblems++;
+    add(v);
+  };
   if (opts.locked) {
-    const lockedMax = Math.max(0, ...opts.locked.keys());
+    let lockedMax = 0;
+    for (const n of opts.locked.keys()) if (n > lockedMax) lockedMax = n;
     for (const [n, bytes] of opts.locked) {
       const mine = exportedCheckpoints.get(n);
-      if (mine === undefined) add({ code: "locked_missing", message: `locked checkpoint ${n} is not in the export`, n });
-      else if (!eq(mine, bytes)) add({ code: "locked_mismatch", message: `checkpoint ${n} differs from the locked copy`, n });
+      if (mine === undefined) lockedAdd({ code: "locked_missing", message: `locked checkpoint ${n} is not in the export`, n });
+      else if (!eq(mine, bytes)) lockedAdd({ code: "locked_mismatch", message: `checkpoint ${n} differs from the locked copy`, n });
     }
     for (const n of exportedCheckpoints.keys()) {
-      if (!opts.locked.has(n) && n <= lockedMax) add({ code: "locked_extra", message: `checkpoint ${n} is not in the locked store`, n });
-      else if (!opts.locked.has(n)) warnings.push(`checkpoint ${n} is newer than the newest locked copy`);
+      if (!opts.locked.has(n) && n <= lockedMax) lockedAdd({ code: "locked_extra", message: `checkpoint ${n} is not in the locked store`, n });
+      else if (!opts.locked.has(n)) warn(`checkpoint ${n} is newer than the newest locked copy`);
     }
   }
-  if (checkpointCount === 0) warnings.push("the export has no checkpoints: nothing in it is attested");
+  if (checkpointCount === 0) warn("the export has no checkpoints: nothing in it is attested");
+  else if (!opts.locked) warn("no locked checkpoint copies were supplied: the checkpoints were checked against the ledger key only");
+  const anchored = opts.locked !== undefined && opts.locked.size > 0 && checkpointCount > 0 && lockedProblems === 0;
 
   return {
     ok: total === 0,
+    anchored,
+    lockedChecked: opts.locked?.size ?? 0,
     ...(tenant !== undefined ? { tenant } : {}),
     ...(exportedAtMs !== undefined ? { exportedAtMs } : {}),
     counts: { documents: docs.size, entries, certificates: certs.size, checkpoints: checkpointCount, erased, entriesAfterLastCheckpoint: afterLast },
@@ -287,6 +335,7 @@ export async function verifyLedger(
     violations,
     violationsTotal: total,
     warnings,
+    warningsTotal,
   };
 
   // ----- one entry ----------------------------------------------------------------
@@ -297,6 +346,7 @@ export async function verifyLedger(
       if (currentDoc !== undefined) finished.add(currentDoc);
       if (finished.has(e.doc)) add({ code: "export_order", message: `entries of ${e.doc} are not contiguous`, ...at });
       currentDoc = e.doc;
+      sessions.clear();
     }
     let d = docs.get(e.doc);
     if (!d) docs.set(e.doc, (d = { lastSeq: 0, lastHash: ZERO_HASH, lastReceivedAtMs: 0 }));
@@ -323,7 +373,7 @@ export async function verifyLedger(
     }
     if (!eq(computed, e.entryHash)) add({ code: "entry_hash_mismatch", message: `${e.doc} entry ${e.seq}: stored hash is not the hash of its fields`, ...at });
 
-    if (e.receivedAtMs < d.lastReceivedAtMs) warnings.push(`${e.doc} entry ${e.seq}: receive time went backwards`);
+    if (e.receivedAtMs < d.lastReceivedAtMs) warn(`${e.doc} entry ${e.seq}: receive time went backwards`);
     d.lastSeq = e.seq;
     d.lastHash = computed;
     d.lastReceivedAtMs = e.receivedAtMs;
@@ -332,7 +382,11 @@ export async function verifyLedger(
     const heads = attested.get(e.doc);
     const want = heads?.get(e.seq);
     if (want !== undefined) {
-      if (!eq(want, computed)) add({ code: "checkpoint_head_mismatch", message: `${e.doc} entry ${e.seq} differs from what a checkpoint signed`, ...at });
+      if (!eq(want.hash, computed)) add({ code: "checkpoint_head_mismatch", message: `${e.doc} entry ${e.seq} differs from what a checkpoint signed`, ...at });
+      // A checkpoint cannot attest an entry that, by the gateway's own clock, had not arrived yet.
+      if (e.receivedAtMs > want.createdAtMs + skewMs) {
+        add({ code: "received_after_checkpoint", message: `${e.doc} entry ${e.seq} was received after the checkpoint that attests it was made`, ...at });
+      }
       heads?.delete(e.seq);
     }
 
@@ -347,6 +401,7 @@ export async function verifyLedger(
 
     if (e.frame === undefined) {
       erased++;
+      if (!opts.allowErased) add({ code: "frame_erased", message: `${e.doc} entry ${e.seq}: the frame is missing, so its signature cannot be checked`, ...at });
       if (state?.ok) checkWindow(e, state.cert, undefined, at);
       return;
     }
@@ -371,6 +426,12 @@ export async function verifyLedger(
       else if (v.reason === "bad_signature") add({ code: "bad_signature", message: `${e.doc} entry ${e.seq}: signature does not verify for this document`, ...at });
       else add({ code: "frame_malformed", message: `${e.doc} entry ${e.seq}: not a signed UPDATE`, ...at });
     }
+    const sk = `${hex(frame.keyId as Uint8Array)}:${frame.sessionId}`;
+    const lastClientSeq = sessions.get(sk);
+    if (lastClientSeq !== undefined && frame.seq <= lastClientSeq) {
+      add({ code: "replay", message: `${e.doc} entry ${e.seq}: session ${frame.sessionId} repeated or went back to client sequence ${frame.seq} (after ${lastClientSeq})`, ...at });
+    }
+    sessions.set(sk, Math.max(lastClientSeq ?? 0, frame.seq));
     checkWindow(e, cert, frame, at);
   }
 

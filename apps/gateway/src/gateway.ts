@@ -381,7 +381,6 @@ export class Gateway {
         onStoreHealth: (ok) => {
           this.#degraded = !ok;
         },
-        now: this.#auth?.now ?? Date.now,
       });
       // A failed load must not leave a poisoned room behind: the next connection retries.
       created.ready.catch(() => {
@@ -729,6 +728,9 @@ export class Gateway {
     const { ws } = conn;
     const auth = this.#auth;
     const cert = conn.cert;
+    // The ledger records when the gateway received this edit, not when its group commit finished: a queue must not push
+    // an edit past its certificate's grace window.
+    const receivedAtMs = auth?.now() ?? Date.now();
     if (auth && cert) {
       if (!roleAtLeast(conn.role, "write")) return this.#reject(ws, "forbidden", seq);
     }
@@ -740,7 +742,7 @@ export class Gateway {
     const { frame } = result;
     if (auth && cert) {
       // The signer asserts when the edit was made. It must fall inside the certificate's life and not be from the future.
-      const now = auth.now();
+      const now = receivedAtMs;
       const t = frame.claimedAtMs;
       if (t < cert.notBeforeMs) return this.#reject(ws, "claimed_before_validity", frame.seq);
       if (t > cert.notAfterMs) return this.#reject(ws, "claimed_after_expiry", frame.seq);
@@ -749,6 +751,7 @@ export class Gateway {
     room.submit({
       frame,
       bytes,
+      receivedAtMs,
       ...(cert ? { certSerial: cert.serial } : {}),
       accepted: (_seq, fresh) => {
         if (fresh) {

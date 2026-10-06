@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { entryHash, hashBytes, ledgerSignerFromKeyPair, checkpointObjectKey, ZERO_HASH } from "@omnisync/crypto";
+import { generateKeyPair } from "@omnisync/protocol";
+import { checkpointHash, signCheckpoint, entryHash, hashBytes, ledgerSignerFromKeyPair, checkpointObjectKey, ZERO_HASH } from "@omnisync/crypto";
 import { MemoryObjectStore, type LedgerStore, type PgDocumentStore } from "@omnisync/store";
 import { FaultyObjectStore } from "@omnisync/store/testing";
 import { verifyLedger, type Report, type TrustInputs } from "@omnisync/verifier";
@@ -109,6 +110,64 @@ describe.each(kinds)("ledger end to end on %s store", (kind) => {
     void alice;
   });
 
+  it("the ledger records when the gateway received an edit, not when a slow commit finished", async () => {
+    await setup();
+    const alice = await ids.enroll("alice", { "doc-1": "write" });
+    const r = await start();
+    const c = await connectAs(r.url, alice, clock, { docId: "doc-1" });
+    clients.push(c);
+    clock.advance(1000);
+    const arrival = clock.now();
+    world.store.delayMs = 300;
+    const pending = c.insert(0, "slow");
+    await new Promise((res) => setTimeout(res, 100)); // the frame has arrived and is waiting on the database
+    clock.advance(HOUR);
+    await pending;
+    world.store.delayMs = 0;
+    const rows = await world.rawStore.readUpdates("doc-1", 0, 10);
+    expect(rows.map((x) => x.receivedAtMs)).toEqual([arrival]);
+  });
+
+  it("receive times never go backwards along a document's chain, even when frames arrive out of clock order", async () => {
+    await setup();
+    const alice = await ids.enroll("alice", { "doc-1": "write" });
+    const bob = await ids.enroll("bob", { "doc-1": "write" });
+    const r = await start();
+    const a = await connectAs(r.url, alice, clock, { docId: "doc-1" });
+    const b = await connectAs(r.url, bob, clock, { docId: "doc-1" });
+    clients.push(a, b);
+    clock.advance(5000);
+    await a.insert(0, "a");
+    clock.t -= 3000; // the gateway's clock steps back
+    await b.insert(0, "b");
+    const rows = await world.rawStore.readUpdates("doc-1", 0, 10);
+    expect(rows[1]?.receivedAtMs).toBe(rows[0]?.receivedAtMs);
+    const rep = await verifyLedger(await exportLines(), trust);
+    expect(rep.warnings.filter((w) => w.includes("went backwards"))).toEqual([]);
+  });
+
+  it("an export taken while edits keep arriving is a consistent snapshot", async () => {
+    await setup();
+    const { alice } = await edit();
+    await writer().flush();
+    const c = clients[0] as GatewayClient;
+    const lines: string[] = [];
+    let first = true;
+    await exportLedger({ docs: world.rawStore as never, identity: world.identity, tenant: "acme", now: clock.now }, async (l) => {
+      lines.push(l);
+      if (first) {
+        first = false;
+        clock.advance(1000);
+        await c.insert(0, "arrives mid-export "); // after the heads were captured
+      }
+    });
+    const rep = await verifyLedger(lines.map((l) => JSON.parse(l) as unknown), trust, { locked: await lockedCopies(1) });
+    expect(rep.violations).toEqual([]);
+    expect(rep.counts.entries).toBe(4); // the late edit is not in this file
+    expect(await world.rawStore.headSeq("doc-1")).toBe(4); // but it is in the ledger
+    void alice;
+  });
+
   it("an edit rejected by the gateway never reaches the ledger", async () => {
     await setup();
     const reader = await ids.enroll("reader", { "doc-1": "read" });
@@ -204,12 +263,82 @@ describe.each(kinds)("ledger end to end on %s store", (kind) => {
       await setup();
       await edit();
       let fail = true;
-      const w = writer({ signer: { keyId: signer.keyId, sign: (m) => (fail ? Promise.reject(new Error("kms down")) : signer.sign(m)) } });
+      const w = writer({ signer: { keyId: signer.keyId, publicKey: signer.publicKey, sign: (m) => (fail ? Promise.reject(new Error("kms down")) : signer.sign(m)) } });
       await w.flush();
       expect(w.stats.signFailures).toBe(1);
       expect(await (world.rawStore as unknown as LedgerStore).lastCheckpoint()).toBeUndefined();
       fail = false;
       expect(await w.flush()).toBe(1);
+    });
+
+    it("a signer that returns a signature that does not verify burns no checkpoint number", async () => {
+      await setup();
+      await edit();
+      const other = ledgerSignerFromKeyPair(generateKeyPair(new Uint8Array(32).fill(77)));
+      // Right key id, wrong key behind it: the signature would never verify against the published ledger key.
+      const w = writer({ signer: { keyId: signer.keyId, publicKey: signer.publicKey, sign: other.sign } });
+      expect(await w.flush()).toBe(0);
+      expect(w.stats.signFailures).toBe(1);
+      expect(await (world.rawStore as unknown as LedgerStore).lastCheckpoint()).toBeUndefined();
+      expect(await writer().flush()).toBe(1); // n = 1 is still free
+    });
+
+    it("a signer that hangs is cut off and counted", async () => {
+      await setup();
+      await edit();
+      const w = writer({ signer: { keyId: signer.keyId, publicKey: signer.publicKey, sign: () => new Promise<Uint8Array>(() => {}) }, signTimeoutMs: 30 });
+      await w.flush();
+      expect(w.stats.signFailures).toBe(1);
+      expect(await (world.rawStore as unknown as LedgerStore).lastCheckpoint()).toBeUndefined();
+    });
+
+    it("never overwrites a different object under a reserved number, and stops writing until a human looks", async () => {
+      await setup();
+      await edit();
+      await checkpointObjects.put(checkpointObjectKey("acme", 1), new Uint8Array([1, 2, 3]));
+      const w = writer();
+      await w.flush();
+      expect(w.stats.uploadConflicts).toBe(1);
+      expect([...((await checkpointObjects.get(checkpointObjectKey("acme", 1))) ?? [])]).toEqual([1, 2, 3]);
+      expect((await (world.rawStore as unknown as LedgerStore).lastCheckpoint())?.uploadedAtMs).toBeUndefined();
+      // More edits do not make the writer reserve n = 2 on top of an unresolved n = 1.
+      const c = clients[0] as GatewayClient;
+      clock.advance(1000);
+      await c.insert(0, "later ");
+      await w.flush();
+      expect((await (world.rawStore as unknown as LedgerStore).lastCheckpoint())?.n).toBe(1);
+      expect(w.stats.written).toBe(1);
+    });
+
+    it("an identical object already in the bucket counts as uploaded (a crash between put and mark)", async () => {
+      await setup();
+      await edit();
+      const ledgerStore = world.rawStore as unknown as LedgerStore;
+      const heads = await ledgerStore.pendingHeads(100);
+      const bytes = await signCheckpoint({ n: 1, createdAtMs: clock.now(), prevCheckpointHash: ZERO_HASH, tenant: "acme", heads }, signer);
+      expect(await ledgerStore.reserveCheckpoint({ n: 1, createdAtMs: clock.now(), prevHash: ZERO_HASH, hash: checkpointHash(bytes), bytes, heads })).toBe(true);
+      await checkpointObjects.put(checkpointObjectKey("acme", 1), bytes); // the process died right here
+      const w = writer();
+      expect(await w.flush()).toBe(0);
+      expect(w.stats.uploadConflicts).toBe(0);
+      expect((await ledgerStore.lastCheckpoint())?.uploadedAtMs).toBeDefined();
+    });
+
+    it("a failed heal blocks new reservations", async () => {
+      await setup();
+      await edit();
+      const objects = new FaultyObjectStore(checkpointObjects);
+      const w = writer({ objects });
+      objects.down = true;
+      await w.flush();
+      const c = clients[0] as GatewayClient;
+      clock.advance(1000);
+      await c.insert(0, "later ");
+      await w.flush(); // heal of n = 1 fails again: do not reserve n = 2
+      expect((await (world.rawStore as unknown as LedgerStore).lastCheckpoint())?.n).toBe(1);
+      objects.down = false;
+      expect(await w.flush()).toBe(1);
+      expect((await (world.rawStore as unknown as LedgerStore).lastCheckpoint())?.n).toBe(2);
     });
 
     it("a store outage is counted, never thrown, and recovers", async () => {
@@ -253,6 +382,12 @@ describe.each(kinds)("ledger end to end on %s store", (kind) => {
     it("rejects nonsense limits", async () => {
       await setup();
       expect(() => writer({ maxDocs: 0 })).toThrow(RangeError);
+      expect(() => writer({ maxDocs: 100_001 })).toThrow(RangeError);
+      expect(() => writer({ intervalMs: 1.5 })).toThrow(RangeError);
+      expect(() => writer({ signTimeoutMs: Number.NaN })).toThrow(RangeError);
+      expect(() => writer({ tenant: "" })).toThrow(RangeError);
+      expect(() => writer({ tenant: "x".repeat(65) })).toThrow(RangeError);
+      expect(() => writer({ tenant: "bad\ud800" })).toThrow(RangeError);
     });
   });
 

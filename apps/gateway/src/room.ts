@@ -41,6 +41,8 @@ export type Log = (event: string, fields?: Record<string, unknown>) => void;
 export interface Submission {
   readonly frame: Frame;
   readonly bytes: Uint8Array;
+  /** Gateway clock when the frame arrived and passed verification; chained into the ledger entry. */
+  readonly receivedAtMs: number;
   /** Certificate that authenticated the signer; recorded next to the update. */
   readonly certSerial?: Uint8Array;
   /** Committed and applied. `fresh` is false when this was a retry of an already stored update. */
@@ -58,8 +60,6 @@ export interface RoomDeps {
   readonly log: Log;
   /** Called with true after a store failure and false after the next success. */
   readonly onStoreHealth: (ok: boolean) => void;
-  /** Gateway clock: the receive time chained into every ledger entry. */
-  readonly now: () => number;
 }
 
 /**
@@ -79,6 +79,7 @@ export class Room {
   readonly ready: Promise<void>;
 
   #pending: Submission[] = [];
+  #lastReceivedAtMs = 0;
   #draining = false;
   #compacting: Promise<void> | undefined;
   #compactNotBefore = 0;
@@ -165,10 +166,14 @@ export class Room {
 
   async #commit(batch: Submission[]): Promise<void> {
     const { store, docId, stats } = this.d;
+    const stamps = new Map<Submission, number>();
     let results;
     try {
-      // One receive time per group commit: the batch arrived together and commits together.
-      const receivedAtMs = this.d.now();
+      // Arrival times, made non-decreasing along the chain: two connections' frames can reach this room out of clock order.
+      for (const s of batch) {
+        this.#lastReceivedAtMs = Math.max(this.#lastReceivedAtMs, s.receivedAtMs);
+        stamps.set(s, this.#lastReceivedAtMs);
+      }
       results = await store.appendUpdates(
         docId,
         batch.map((s) => ({
@@ -177,7 +182,7 @@ export class Room {
           clientSeq: s.frame.seq,
           frame: s.bytes,
           payloadHash: sha256(s.frame.payload),
-          receivedAtMs,
+          receivedAtMs: stamps.get(s) as number,
           ...(s.certSerial ? { certSerial: s.certSerial } : {}),
         })),
       );

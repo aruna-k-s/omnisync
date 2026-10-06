@@ -18,6 +18,7 @@ const seed = (n: number) => new Uint8Array(32).fill(n);
 export const issuer = generateKeyPair(seed(200));
 export const ledger = generateKeyPair(seed(201));
 export const stranger = generateKeyPair(seed(202));
+export const stranger2 = generateKeyPair(seed(203));
 export const trust = { issuers: [issuer.publicKey], ledgerKeys: [ledger.publicKey] };
 
 export interface User {
@@ -70,16 +71,20 @@ export class Fixture {
       signWith?: KeyPair;
       /** Record a payload hash that does not match the payload (the chain itself stays consistent). */
       payloadHash?: Uint8Array;
+      /** Force the client sequence and session (default: increasing, session 1). */
+      clientSeq?: number;
+      sessionId?: number;
     } = {},
   ): EntryRecord {
     const head = this.#heads.get(doc);
     const seq = (head?.seq ?? 0) + 1;
     const k = `${doc}:${bytesToHex(user.serial)}`;
-    const clientSeq = (this.#clientSeq.get(k) ?? 0) + 1;
+    const clientSeq = opts.clientSeq ?? (this.#clientSeq.get(k) ?? 0) + 1;
     this.#clientSeq.set(k, clientSeq);
     const payload = opts.payload ?? new Uint8Array([seq & 0xff, 7, 7]);
     const receivedAtMs = opts.receivedAtMs ?? (this.now += 1000);
-    const frame = signUpdate({ docId: opts.signForDoc ?? doc, sessionId: 1, seq: clientSeq, claimedAtMs: opts.claimedAtMs ?? receivedAtMs - 500, payload }, opts.signWith ?? user.key);
+    this.now = Math.max(this.now, receivedAtMs); // the writer's clock has seen every entry it checkpoints
+    const frame = signUpdate({ docId: opts.signForDoc ?? doc, sessionId: opts.sessionId ?? 1, seq: clientSeq, claimedAtMs: opts.claimedAtMs ?? receivedAtMs - 500, payload }, opts.signWith ?? user.key);
     const prevHash = head?.hash ?? ZERO_HASH;
     const frameHash = hashBytes(frame);
     const payloadHash = opts.payloadHash ?? hashBytes(payload);

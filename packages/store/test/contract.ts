@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ZERO_HASH, entryHash, hashBytes } from "@omnisync/crypto";
-import type { DocumentStore, LedgerStore, NewUpdate } from "../src/index.js";
+import { createPrivateKey, generateKeyPairSync, sign as edSign } from "node:crypto";
+import { ZERO_HASH, checkpointHash, entryHash, hashBytes, signCheckpoint, type LedgerSigner } from "@omnisync/crypto";
+import type { DocumentStore, LedgerStore, NewCheckpoint, NewUpdate } from "../src/index.js";
 
 const key = (n: number) => new Uint8Array(8).fill(n);
 export const upd = (clientSeq: number, opts: { session?: number; key?: number; byte?: number } = {}): NewUpdate => ({
@@ -14,14 +15,19 @@ export const upd = (clientSeq: number, opts: { session?: number; key?: number; b
 
 type Store = DocumentStore & LedgerStore;
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
-const checkpoint = (n: number, prevHash: Uint8Array, heads: { documentId: string; seq: number; headHash: Uint8Array }[]) => ({
-  n,
-  createdAtMs: 1_800_000_100_000 + n,
-  prevHash,
-  hash: new Uint8Array(32).fill(100 + n),
-  bytes: new Uint8Array([n]),
-  heads,
-});
+
+const ledgerPair = generateKeyPairSync("ed25519");
+const ledgerSigner: LedgerSigner = {
+  keyId: new Uint8Array(8).fill(9),
+  publicKey: Buffer.from(ledgerPair.publicKey.export({ format: "jwk" }).x as string, "base64url"),
+  sign: (m) => edSign(null, m, createPrivateKey(ledgerPair.privateKey.export({ format: "pem", type: "pkcs8" }))),
+};
+export type Heads = { documentId: string; seq: number; headHash: Uint8Array }[];
+/** A real signed checkpoint. The store refuses reservations whose bytes disagree with their fields. */
+export async function checkpoint(n: number, prevHash: Uint8Array, heads: Heads, createdAtMs = 1_800_000_100_000 + n): Promise<NewCheckpoint> {
+  const bytes = await signCheckpoint({ n, createdAtMs, prevCheckpointHash: prevHash, tenant: "t", heads }, ledgerSigner);
+  return { n, createdAtMs, prevHash, hash: checkpointHash(bytes), bytes, heads };
+}
 
 /** Behaviour every DocumentStore must have, run against memory and Postgres alike. */
 export function documentStoreContract(name: string, make: () => Promise<Store>): void {
@@ -208,7 +214,7 @@ export function documentStoreContract(name: string, make: () => Promise<Store>):
       expect(await s.pendingEntries()).toBe(3);
       expect((await s.pendingHeads(1)).length).toBe(1);
 
-      expect(await s.reserveCheckpoint(checkpoint(1, ZERO_HASH, heads))).toBe(true);
+      expect(await s.reserveCheckpoint(await checkpoint(1, ZERO_HASH, heads))).toBe(true);
       expect(await s.pendingHeads(10)).toEqual([]);
       expect(await s.pendingEntries()).toBe(0);
       const last = await s.lastCheckpoint();
@@ -225,15 +231,15 @@ export function documentStoreContract(name: string, make: () => Promise<Store>):
       const s = await make();
       await s.appendUpdates("a", [upd(1)]);
       const heads = await s.pendingHeads(10);
-      expect(await s.reserveCheckpoint(checkpoint(2, ZERO_HASH, heads))).toBe(false); // skips n = 1
-      expect(await s.reserveCheckpoint(checkpoint(1, new Uint8Array(32).fill(1), heads))).toBe(false); // wrong prev
+      expect(await s.reserveCheckpoint(await checkpoint(2, ZERO_HASH, heads))).toBe(false); // skips n = 1
+      expect(await s.reserveCheckpoint(await checkpoint(1, new Uint8Array(32).fill(1), heads))).toBe(false); // wrong prev
       expect(await s.pendingEntries()).toBe(1); // a refused reservation advanced nothing
-      const first = checkpoint(1, ZERO_HASH, heads);
+      const first = await checkpoint(1, ZERO_HASH, heads);
       expect(await s.reserveCheckpoint(first)).toBe(true);
       expect(await s.reserveCheckpoint(first)).toBe(false); // n is never reused
       await s.appendUpdates("a", [upd(2)]);
-      expect(await s.reserveCheckpoint(checkpoint(2, new Uint8Array(32).fill(7), await s.pendingHeads(10)))).toBe(false);
-      expect(await s.reserveCheckpoint(checkpoint(2, first.hash, await s.pendingHeads(10)))).toBe(true);
+      expect(await s.reserveCheckpoint(await checkpoint(2, new Uint8Array(32).fill(7), await s.pendingHeads(10)))).toBe(false);
+      expect(await s.reserveCheckpoint(await checkpoint(2, first.hash, await s.pendingHeads(10)))).toBe(true);
       expect((await s.listCheckpoints(0, 10)).map((c) => c.n)).toEqual([1, 2]);
       expect((await s.listCheckpoints(1, 10)).map((c) => c.n)).toEqual([2]);
       await s.close();
@@ -246,8 +252,8 @@ export function documentStoreContract(name: string, make: () => Promise<Store>):
         { documentId: "a", seq: 1, headHash: new Uint8Array(32) },
         { documentId: "a-ghost", seq: 1, headHash: new Uint8Array(32) },
       ];
-      expect(await s.reserveCheckpoint(checkpoint(1, ZERO_HASH, bad))).toBe(false);
-      expect(await s.reserveCheckpoint(checkpoint(1, ZERO_HASH, [{ documentId: "a", seq: 2, headHash: new Uint8Array(32) }]))).toBe(false);
+      expect(await s.reserveCheckpoint(await checkpoint(1, ZERO_HASH, bad))).toBe(false);
+      expect(await s.reserveCheckpoint(await checkpoint(1, ZERO_HASH, [{ documentId: "a", seq: 2, headHash: new Uint8Array(32) }]))).toBe(false);
       expect(await s.pendingEntries()).toBe(1);
       expect(await s.lastCheckpoint()).toBeUndefined();
       await s.close();
@@ -258,24 +264,45 @@ export function documentStoreContract(name: string, make: () => Promise<Store>):
       await s.appendUpdates("a", [upd(1)]);
       await s.appendUpdates("b", [upd(1)]);
       const heads = await s.pendingHeads(10);
-      const first = checkpoint(1, ZERO_HASH, heads);
+      const first = await checkpoint(1, ZERO_HASH, heads);
       expect(await s.reserveCheckpoint(first)).toBe(true);
       // A second writer that read the same heads before the first committed arrives late with the next n.
-      expect(await s.reserveCheckpoint(checkpoint(2, first.hash, heads))).toBe(false);
+      expect(await s.reserveCheckpoint(await checkpoint(2, first.hash, heads))).toBe(false);
       // Partially stale is refused too: b has moved on, a has not.
       await s.appendUpdates("b", [upd(2)]);
-      const mixed = [heads[0] as (typeof heads)[number], { ...(heads[1] as (typeof heads)[number]), seq: 2 }];
-      expect(await s.reserveCheckpoint(checkpoint(2, first.hash, mixed))).toBe(false);
-      expect(await s.reserveCheckpoint(checkpoint(2, first.hash, []))).toBe(false);
+      const moved = (await s.pendingHeads(10)).find((h) => h.documentId === "b");
+      const mixed = [heads[0] as (typeof heads)[number], moved as NonNullable<typeof moved>];
+      expect(await s.reserveCheckpoint(await checkpoint(2, first.hash, mixed))).toBe(false);
+      expect(await s.reserveCheckpoint(await checkpoint(2, first.hash, []))).toBe(false);
       expect((await s.listCheckpoints(0, 10)).map((c) => c.n)).toEqual([1]);
       expect(await s.pendingEntries()).toBe(1);
+      await s.close();
+    });
+
+    it("refuses a reservation that lies: bytes that disagree with the fields, a made-up head hash, or time running backwards", async () => {
+      const s = await make();
+      await s.appendUpdates("a", [upd(1)]);
+      const heads = await s.pendingHeads(10);
+      const good = await checkpoint(1, ZERO_HASH, heads);
+      // The signed bytes say n = 1 but the row claims n = 1 with different heads, hash, prev or time.
+      expect(await s.reserveCheckpoint({ ...good, hash: new Uint8Array(32).fill(5) })).toBe(false);
+      expect(await s.reserveCheckpoint({ ...good, bytes: good.bytes.slice(0, good.bytes.length - 1) })).toBe(false);
+      expect(await s.reserveCheckpoint({ ...good, createdAtMs: good.createdAtMs + 1 })).toBe(false);
+      const fake = [{ documentId: "a", seq: 1, headHash: new Uint8Array(32).fill(3) }];
+      expect(await s.reserveCheckpoint(await checkpoint(1, ZERO_HASH, fake))).toBe(false); // self-consistent, but not the real entry hash
+      expect(await s.reserveCheckpoint({ ...good, heads: [] })).toBe(false);
+      expect(await s.pendingEntries()).toBe(1);
+      expect(await s.reserveCheckpoint(good)).toBe(true);
+      await s.appendUpdates("a", [upd(2)]);
+      expect(await s.reserveCheckpoint(await checkpoint(2, good.hash, await s.pendingHeads(10), good.createdAtMs - 1))).toBe(false);
+      expect(await s.reserveCheckpoint(await checkpoint(2, good.hash, await s.pendingHeads(10), good.createdAtMs))).toBe(true); // equal time is fine
       await s.close();
     });
 
     it("tracks uploads separately and never loses a reserved checkpoint", async () => {
       const s = await make();
       await s.appendUpdates("a", [upd(1)]);
-      await s.reserveCheckpoint(checkpoint(1, ZERO_HASH, await s.pendingHeads(10)));
+      await s.reserveCheckpoint(await checkpoint(1, ZERO_HASH, await s.pendingHeads(10)));
       expect((await s.unuploadedCheckpoints(10)).map((c) => c.n)).toEqual([1]);
       await s.markCheckpointUploaded(1, 5);
       await s.markCheckpointUploaded(1, 9); // idempotent; the first time stands

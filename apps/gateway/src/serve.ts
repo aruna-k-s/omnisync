@@ -6,17 +6,16 @@
  *   OMNISYNC_ISSUER_PUBLIC_KEYS  comma separated hex Ed25519 public keys of trusted certificate issuers
  *   OMNISYNC_ALLOWED_ORIGINS     comma separated browser origins, or "*" (default none)
  *   OMNISYNC_LEDGER_KEY_FILE     file holding the 32-byte ledger signing seed as 64 hex chars (NOT the issuing key)
- *   OMNISYNC_TENANT              tenant name written into checkpoints (default "default")
- *   OMNISYNC_CHECKPOINT_DIR      checkpoint directory; point it at the locked bucket mount (S3 adapter arrives in week 9)
+ *   OMNISYNC_TENANT              tenant name written into checkpoints (required; verifiers check it with --tenant)
+ *   OMNISYNC_CHECKPOINT_DIR      checkpoint directory (required); point it at the locked bucket mount (S3 adapter arrives in week 9)
  *   PORT                         default 8080
  */
-import { readFile } from "node:fs/promises";
-import { ledgerSignerFromKeyPair } from "@omnisync/crypto";
-import { generateKeyPair, hexToBytes } from "@omnisync/protocol";
+import { hexToBytes } from "@omnisync/protocol";
 import { FsObjectStore, PgDocumentStore, PgIdentityStore, migrate } from "@omnisync/store";
 import type { EngineName } from "@omnisync/engine";
 import { CheckpointWriter } from "./checkpoint.js";
 import { Gateway } from "./gateway.js";
+import { loadLedgerConfig } from "./ledger-config.js";
 
 function need(name: string): string {
   const v = process.env[name];
@@ -24,6 +23,9 @@ function need(name: string): string {
   return v;
 }
 
+// Every setting is checked before the first connection or listener, so a bad deployment fails at start, not at the first checkpoint.
+const issuerKeys = need("OMNISYNC_ISSUER_PUBLIC_KEYS").split(",").map((h) => h.trim().toLowerCase());
+const ledger = await loadLedgerConfig(process.env, issuerKeys);
 const store = new PgDocumentStore({ connectionString: need("DATABASE_URL") });
 await migrate(store.pool);
 const origins = process.env["OMNISYNC_ALLOWED_ORIGINS"];
@@ -40,18 +42,11 @@ const gateway = new Gateway({
   ...(origins ? { allowedOrigins: origins === "*" ? ("*" as const) : origins.split(",").map((s) => s.trim()) } : {}),
   log: (event, fields) => console.warn(JSON.stringify({ event, ...fields })),
 });
-const seedHex = (await readFile(need("OMNISYNC_LEDGER_KEY_FILE"), "utf8")).trim();
-if (!/^[0-9a-f]{64}$/.test(seedHex)) throw new Error("OMNISYNC_LEDGER_KEY_FILE must hold 64 lowercase hex characters");
-const ledgerKey = generateKeyPair(hexToBytes(seedHex));
-const issuerKeys = need("OMNISYNC_ISSUER_PUBLIC_KEYS").split(",").map((h) => h.trim().toLowerCase());
-if (issuerKeys.includes(Buffer.from(ledgerKey.publicKey).toString("hex"))) {
-  throw new Error("the ledger key must not be a certificate issuing key");
-}
 const checkpoints = new CheckpointWriter({
   store,
-  objects: new FsObjectStore(process.env["OMNISYNC_CHECKPOINT_DIR"] ?? "./.omnisync-checkpoints"),
-  tenant: process.env["OMNISYNC_TENANT"] ?? "default",
-  signer: ledgerSignerFromKeyPair(ledgerKey),
+  objects: new FsObjectStore(ledger.checkpointDir),
+  tenant: ledger.tenant,
+  signer: ledger.signer,
   log: (event, fields) => console.warn(JSON.stringify({ event, ...fields })),
 });
 checkpoints.start();

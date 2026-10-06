@@ -16,7 +16,7 @@ import {
   snapshotObjectKey,
 } from "../src/index.js";
 import { FaultyDocumentStore } from "../src/testing.js";
-import { documentStoreContract, upd } from "./contract.js";
+import { checkpoint, documentStoreContract, upd } from "./contract.js";
 import { identityStoreContract } from "./identity-contract.js";
 
 documentStoreContract("memory", async () => new MemoryDocumentStore());
@@ -129,16 +129,10 @@ describe.skipIf(!url)("PostgreSQL store", () => {
     const docs = open();
     await docs.appendUpdates("cp-race", [upd(1)]);
     const heads = await docs.pendingHeads(100);
-    const cp = (hashByte: number) => ({
-      n: 1,
-      createdAtMs: 1,
-      prevHash: new Uint8Array(32),
-      hash: new Uint8Array(32).fill(hashByte),
-      bytes: new Uint8Array([hashByte]),
-      heads,
-    });
+    // Four writers sign different checkpoints for the same n (different times), all valid on their own.
+    const cps = await Promise.all([1, 2, 3, 4].map((i) => checkpoint(1, new Uint8Array(32), heads, 1_800_000_000_000 + i)));
     const writers = [open(), open(), open(), open()];
-    const results = await Promise.all(writers.map((w, i) => w.reserveCheckpoint(cp(i + 1))));
+    const results = await Promise.all(writers.map((w, i) => w.reserveCheckpoint(cps[i] as (typeof cps)[number])));
     expect(results.filter(Boolean)).toHaveLength(1);
     expect((await docs.listCheckpoints(0, 10)).length).toBe(1);
     await expect(docs.pool.query("UPDATE ledger_checkpoints SET bytes = '\\x00'")).rejects.toThrow(/append-only/);

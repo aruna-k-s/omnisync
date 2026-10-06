@@ -3,8 +3,9 @@ import type { DocumentStore, IdentityStore, LedgerStore } from "@omnisync/store"
 
 /**
  * Streams a ledger export (spec: docs/specs/ledger.md): meta, certificates, checkpoints, then entries
- * document by document. Reads only; safe on a live database. For a checkpoint comparison against the
- * locked bucket, copy the bucket first and export afterwards.
+ * document by document. Reads only; safe on a live database: the file is a consistent snapshot of the moment
+ * the heads were captured. For a checkpoint comparison against the locked bucket, copy the bucket first and
+ * export afterwards.
  */
 export interface ExportSources {
   readonly docs: DocumentStore & LedgerStore;
@@ -19,6 +20,24 @@ export async function exportLedger(src: ExportSources, write: (line: string) => 
   const emit = async (r: ExportRecord): Promise<void> => {
     await write(encodeRecord(r) + "\n");
   };
+
+  // Capture first, then read, so a database that keeps taking writes still yields a consistent file:
+  // 1. the newest checkpoint number, 2. every document's head at that moment, 3. certificates (all of which
+  // were stored before any entry that uses them), 4. checkpoints up to the cap, 5. entries up to each head.
+  // Anything written after step 2 simply is not in the export; the next export has it.
+  const checkpointCap = (await src.docs.lastCheckpoint())?.n ?? 0;
+  const heads: { doc: string; head: number }[] = [];
+  for (let cursor: string | undefined; ; ) {
+    const ids = await src.docs.listDocuments(cursor, PAGE);
+    for (const doc of ids) {
+      const head = await src.docs.headSeq(doc);
+      if (head > 0) heads.push({ doc, head });
+    }
+    const lastId = ids[ids.length - 1];
+    if (ids.length < PAGE || lastId === undefined) break;
+    cursor = lastId;
+  }
+
   await emit({ t: "meta", version: EXPORT_VERSION, tenant: src.tenant, exportedAtMs: (src.now ?? Date.now)() });
 
   for (let after: Uint8Array | undefined; ; ) {
@@ -29,46 +48,39 @@ export async function exportLedger(src: ExportSources, write: (line: string) => 
     after = last.serial;
   }
 
-  for (let after = 0; ; ) {
-    const cps = await src.docs.listCheckpoints(after, PAGE);
-    for (const c of cps) await emit({ t: "checkpoint", bytes: c.bytes });
+  for (let after = 0; after < checkpointCap; ) {
+    const cps = await src.docs.listCheckpoints(after, Math.min(PAGE, checkpointCap - after));
+    for (const c of cps) if (c.n <= checkpointCap) await emit({ t: "checkpoint", bytes: c.bytes });
     const last = cps[cps.length - 1];
-    if (cps.length < PAGE || !last) break;
+    if (!last) break;
     after = last.n;
   }
 
   let entries = 0;
-  let documents = 0;
-  for (let cursor: string | undefined; ; ) {
-    const ids = await src.docs.listDocuments(cursor, PAGE);
-    for (const doc of ids) {
-      documents++;
-      for (let seq = 0; ; ) {
-        const rows = await src.docs.readUpdates(doc, seq, PAGE);
-        for (const r of rows) {
-          entries++;
-          await emit({
-            t: "entry",
-            doc,
-            seq: r.seq,
-            receivedAtMs: r.receivedAtMs,
-            ...(r.certSerial ? { certSerial: r.certSerial } : {}),
-            keyEpoch: r.keyEpoch,
-            prevHash: r.prevHash,
-            entryHash: r.entryHash,
-            frameHash: r.frameHash,
-            payloadHash: r.payloadHash,
-            frame: r.frame,
-          });
-        }
-        const last = rows[rows.length - 1];
-        if (rows.length < PAGE || !last) break;
-        seq = last.seq;
+  for (const { doc, head } of heads) {
+    for (let seq = 0; seq < head; ) {
+      const rows = await src.docs.readUpdates(doc, seq, Math.min(PAGE, head - seq));
+      for (const r of rows) {
+        if (r.seq > head) break;
+        entries++;
+        await emit({
+          t: "entry",
+          doc,
+          seq: r.seq,
+          receivedAtMs: r.receivedAtMs,
+          ...(r.certSerial ? { certSerial: r.certSerial } : {}),
+          keyEpoch: r.keyEpoch,
+          prevHash: r.prevHash,
+          entryHash: r.entryHash,
+          frameHash: r.frameHash,
+          payloadHash: r.payloadHash,
+          frame: r.frame,
+        });
       }
+      const last = rows[rows.length - 1];
+      if (!last) break;
+      seq = last.seq;
     }
-    const lastId = ids[ids.length - 1];
-    if (ids.length < PAGE || lastId === undefined) break;
-    cursor = lastId;
   }
-  return { entries, documents };
+  return { entries, documents: heads.length };
 }
