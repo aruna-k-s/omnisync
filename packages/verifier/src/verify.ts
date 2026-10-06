@@ -322,7 +322,7 @@ export async function verifyLedger(
   }
   if (checkpointCount === 0) warn("the export has no checkpoints: nothing in it is attested");
   else if (!opts.locked) warn("no locked checkpoint copies were supplied: the checkpoints were checked against the ledger key only");
-  const anchored = opts.locked !== undefined && opts.locked.size > 0 && checkpointCount > 0 && lockedProblems === 0;
+  const anchored = opts.locked !== undefined && opts.locked.size > 0 && lockedProblems === 0; // every locked number was found in the export, so there is a checkpoint
 
   return {
     ok: total === 0,

@@ -159,11 +159,13 @@ describe.each(kinds)("ledger end to end on %s store", (kind) => {
         first = false;
         clock.advance(1000);
         await c.insert(0, "arrives mid-export "); // after the heads were captured
+        await writer().flush(); // and a checkpoint that attests it: it would read as truncation if it leaked into this file
       }
     });
     const rep = await verifyLedger(lines.map((l) => JSON.parse(l) as unknown), trust, { locked: await lockedCopies(1) });
     expect(rep.violations).toEqual([]);
     expect(rep.counts.entries).toBe(4); // the late edit is not in this file
+    expect(rep.counts.checkpoints).toBe(1); // nor is the checkpoint that covers it
     expect(await world.rawStore.headSeq("doc-1")).toBe(4); // but it is in the ledger
     void alice;
   });
@@ -235,6 +237,23 @@ describe.each(kinds)("ledger end to end on %s store", (kind) => {
       expect(stored && Buffer.from(stored).equals(Buffer.from(reserved?.bytes ?? new Uint8Array()))).toBe(true);
       expect(w.stats.written).toBe(1); // not re-reserved
       expect((await (world.rawStore as unknown as LedgerStore).lastCheckpoint())?.uploadedAtMs).toBeDefined();
+    });
+
+    it("a failure to record an upload is not counted as an upload", async () => {
+      await setup();
+      await edit();
+      const real = world.rawStore as unknown as LedgerStore;
+      const flaky = new Proxy(real, {
+        get: (t, k) => (k === "markCheckpointUploaded" ? () => Promise.reject(new Error("mark failed")) : Reflect.get(t, k).bind?.(t) ?? Reflect.get(t, k)),
+      });
+      const w = writer({ store: flaky });
+      await w.flush();
+      expect(w.stats.written).toBe(1);
+      expect(w.stats.uploaded).toBe(0);
+      expect(w.stats.uploadFailures).toBe(1);
+      expect((await real.lastCheckpoint())?.uploadedAtMs).toBeUndefined();
+      expect(await writer().flush()).toBe(0); // a healthy writer finds the identical object and records it
+      expect((await real.lastCheckpoint())?.uploadedAtMs).toBeDefined();
     });
 
     it("a hung object store cannot wedge the writer", async () => {
@@ -362,6 +381,9 @@ describe.each(kinds)("ledger end to end on %s store", (kind) => {
       await c.insert(0, "y");
       clock.t -= 10 * HOUR;
       await w.flush();
+      expect(w.stats.written).toBe(2); // the writer held the time, so the store did not refuse the second checkpoint
+      const times = (await (world.rawStore as unknown as LedgerStore).listCheckpoints(0, 10)).map((x) => x.createdAtMs);
+      expect(times[1]).toBeGreaterThanOrEqual(times[0] as number);
       const rep = await verifyLedger(await exportLines(), trust);
       expect(rep.violations.filter((v) => v.code === "checkpoint_time")).toEqual([]);
     });
@@ -388,6 +410,9 @@ describe.each(kinds)("ledger end to end on %s store", (kind) => {
       expect(() => writer({ tenant: "" })).toThrow(RangeError);
       expect(() => writer({ tenant: "x".repeat(65) })).toThrow(RangeError);
       expect(() => writer({ tenant: "bad\ud800" })).toThrow(RangeError);
+      // A signer whose key id is not the id of its public key would sign checkpoints no verifier can find.
+      expect(() => writer({ signer: { ...signer, keyId: new Uint8Array(8) } })).toThrow(RangeError);
+      expect(() => writer({ signer: { ...signer, publicKey: new Uint8Array(31) } })).toThrow(RangeError);
     });
   });
 

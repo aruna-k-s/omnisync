@@ -9,6 +9,7 @@ import {
   type LedgerSigner,
 } from "@omnisync/crypto";
 import { byIdBytes, type LedgerStore, type ObjectStore } from "@omnisync/store";
+import { keyIdOf } from "@omnisync/protocol";
 import type { Log } from "./room.js";
 
 /**
@@ -83,7 +84,11 @@ export class CheckpointWriter {
     positive("signTimeoutMs", cfg.signTimeoutMs);
     const tenantBytes = Buffer.byteLength(cfg.tenant, "utf8");
     if (tenantBytes < 1 || tenantBytes > MAX_TENANT_BYTES || !isWellFormed(cfg.tenant)) throw new RangeError(`tenant must be 1-${MAX_TENANT_BYTES} bytes of well-formed Unicode`);
-    if (Buffer.compare(cfg.signer.publicKey, Buffer.alloc(0)) === 0 || cfg.signer.keyId.length !== 8) throw new RangeError("signer needs an 8-byte key id and a public key");
+    // Verifiers look the ledger key up by the id derived from its public key; a signer whose id disagrees would sign
+    // checkpoints nobody can verify.
+    if (cfg.signer.publicKey.length !== 32 || Buffer.compare(cfg.signer.keyId, keyIdOf(cfg.signer.publicKey)) !== 0) {
+      throw new RangeError("signer key id must be the id of its 32-byte public key");
+    }
     this.#lastRunAt = this.#o.now();
   }
 
@@ -153,7 +158,7 @@ export class CheckpointWriter {
           "checkpoint signing",
         );
         // Never reserve a number for bytes we have not checked ourselves: a broken signer would burn n for good.
-        const own = verifyCheckpoint(bytes, (id) => (Buffer.compare(id, this.#o.signer.keyId) === 0 ? this.#o.signer.publicKey : undefined));
+        const own = verifyCheckpoint(bytes, () => this.#o.signer.publicKey);
         if (!own.ok) throw new Error(`signer produced a checkpoint that does not verify (${own.reason})`);
       } catch (e) {
         this.stats.signFailures++;

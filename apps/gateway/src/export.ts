@@ -31,7 +31,7 @@ export async function exportLedger(src: ExportSources, write: (line: string) => 
     const ids = await src.docs.listDocuments(cursor, PAGE);
     for (const doc of ids) {
       const head = await src.docs.headSeq(doc);
-      if (head > 0) heads.push({ doc, head });
+      heads.push({ doc, head });
     }
     const lastId = ids[ids.length - 1];
     if (ids.length < PAGE || lastId === undefined) break;
@@ -50,7 +50,7 @@ export async function exportLedger(src: ExportSources, write: (line: string) => 
 
   for (let after = 0; after < checkpointCap; ) {
     const cps = await src.docs.listCheckpoints(after, Math.min(PAGE, checkpointCap - after));
-    for (const c of cps) if (c.n <= checkpointCap) await emit({ t: "checkpoint", bytes: c.bytes });
+    for (const c of cps) await emit({ t: "checkpoint", bytes: c.bytes });
     const last = cps[cps.length - 1];
     if (!last) break;
     after = last.n;
@@ -61,7 +61,6 @@ export async function exportLedger(src: ExportSources, write: (line: string) => 
     for (let seq = 0; seq < head; ) {
       const rows = await src.docs.readUpdates(doc, seq, Math.min(PAGE, head - seq));
       for (const r of rows) {
-        if (r.seq > head) break;
         entries++;
         await emit({
           t: "entry",

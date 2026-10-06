@@ -7,6 +7,8 @@ Protected paths: `packages/crypto/src/ledger.ts`, `packages/verifier/**`, `packa
 
 The update log already stores every signed frame and never changes (a database trigger forbids UPDATE and DELETE). Week 6 makes it a **ledger**: tamper-evident to someone who does not trust the database. After this week an auditor with an export, the public keys of the certificate issuer and the ledger key, and the verifier can prove four things with no database access: nothing in the export was altered, removed from the middle, reordered or swapped; every entry was signed by a certificate that a trusted issuer issued and that was valid when the entry arrived; the export matches the signed checkpoints the gateway wrote to a separate store; and how many entries are newer than the last checkpoint.
 
+A pass has two strengths, and the verifier says which one it got. **Consistent** means the export agrees with itself and with the ledger key. **Anchored** means it was also compared with checkpoint copies fetched from the locked bucket and all of them matched; only that defeats someone who holds both the database and the ledger key. `omnisync verify` exits 0 only for anchored results.
+
 It cannot prove the content is correct, that the gateway told the truth about receive time, or that nothing was deleted after the last checkpoint (see Known limits).
 
 ## Decisions applied
@@ -21,7 +23,7 @@ One row in `document_updates` per accepted update. New columns, all set inside t
 
 | Column | Meaning |
 | --- | --- |
-| `received_at_ms` | Gateway receive time in ms. Authoritative; the signer's claimed time is inside the signed frame |
+| `received_at_ms` | Gateway clock when the frame arrived and passed verification, not when its group commit finished. Made non-decreasing along a document's chain. Authoritative; the signer's claimed time is inside the signed frame |
 | `prev_hash` | `entry_hash` of seq-1, or 32 zero bytes for seq 1 |
 | `entry_hash` | Hash below |
 | `frame_hash` | SHA-256 of the stored frame, signature included |
@@ -61,26 +63,29 @@ The signature covers `"omnisync/v1/checkpoint\0"` plus every byte before it. `ch
 
 ### Writing
 
-The `CheckpointWriter` (gateway) runs every 5 minutes or after 1,000 persisted entries, whichever comes first, and once more on clean shutdown.
+The `CheckpointWriter` (gateway) runs every 5 minutes or after 1,000 persisted entries, whichever comes first, and once more on clean shutdown. Its settings are validated when it is built (positive integers, `maxDocs` at most 100,000, a tenant of 1 to 64 well-formed bytes, a signer whose key id is the id of its 32-byte public key).
 
-1. Read up to `maxDocs` pending heads (`head_seq > checkpoint_seq`) and the last checkpoint.
-2. Build and sign the body.
-3. **Reserve n in the database first** (`ledger_checkpoints` is append-only and `n` is its primary key), advancing each document's `checkpoint_seq` in the same transaction. A concurrent writer loses on the primary key and retries.
-4. Upload the exact bytes to the object store at `checkpoints/<tenant>/<n, 12 digits>.ckpt`.
-5. Record the upload.
+1. First heal: re-upload every reserved checkpoint that has no recorded upload. If any cannot be uploaded, stop; **no new number is reserved while an older one is not safely in the bucket.**
+2. Read up to `maxDocs` pending heads (`head_seq > checkpoint_seq`) and the last checkpoint. The checkpoint time is the clock, but never earlier than the previous checkpoint's.
+3. Build and sign the body, with a timeout (a hung KMS must not wedge the writer). **Verify the returned signature against the signer's own public key.** A signer that returns garbage burns no number.
+4. **Reserve n in the database** (`ledger_checkpoints` is append-only and `n` is its primary key), advancing each document's `checkpoint_seq` in the same transaction. A concurrent writer loses on the primary key and retries. The store refuses a reservation unless the signed bytes, hash, previous hash, time and heads all agree; every head equals the real entry hash at that seq; every head moves strictly forward; heads are non-empty; and time does not run backwards.
+5. Upload the exact bytes to `checkpoints/<tenant hex>/<n, 12 digits>.ckpt`. If the key already holds **different** bytes, the writer never overwrites: it counts an upload conflict, logs it and stops until a human looks. Identical bytes count as uploaded (a crash between put and mark).
+6. Record the upload.
 
-Because step 3 precedes step 4, the object store never holds two different objects for one `n`. Every tick first re-uploads any reserved checkpoint without a recorded upload (the same bytes to the same key), so a crash between 3 and 4 heals itself. With S3 Object Lock in compliance mode (week 9), the upload is the part that cannot be rewritten later.
+Because step 4 precedes step 5, the object store never holds two different objects for one `n`. A crash between 4 and 5 heals itself on the next tick. The existence check and the put are not atomic; Object Lock (week 9) closes that gap in the bucket itself. With S3 Object Lock in compliance mode (week 9), the upload is the part that cannot be rewritten later.
 
 ## Export and verification
 
-`pnpm --filter @omnisync/gateway export` writes newline-delimited JSON, in this order, which the verifier requires so it can run in constant memory per document:
+`pnpm --filter @omnisync/gateway export` writes newline-delimited JSON (to a new file, mode 0600, never replacing an existing one), in this order, which the verifier requires so it can run in constant memory per document. The exporter reads a live database consistently: it first captures the newest checkpoint number and every document's head, then reads certificates, checkpoints up to that number, and entries up to each captured head. Edits that arrive meanwhile are simply not in the file.
 
 1. `{"t":"meta", "version":1, "tenant", "exportedAtMs"}`
 2. `{"t":"cert", "serial", "certificate"}` for every certificate with stored bytes
 3. `{"t":"checkpoint", "bytes"}` in `n` order
 4. `{"t":"entry", ...}` per document, ascending seq: `doc, seq, receivedAtMs, certSerial?, keyEpoch, prevHash, entryHash, frameHash, payloadHash, frame` (`frame` may be absent after erasure; every hash stays)
 
-`omnisync verify <export> --issuer <hex pubkey>... --ledger-key <hex pubkey>... [--locked <dir>] [--grace-ms 259200000] [--json]` reads the export and the trust inputs only. `--locked` is a directory holding the copies fetched from the locked bucket. Exit code 0 means no violation; 1 means at least one; 2 means unusable input.
+`omnisync verify <export> --issuer <hex pubkey>... --ledger-key <hex pubkey>... [--tenant <name>] [--locked <dir>] [--allow-unanchored] [--allow-erased] [--grace-ms 259200000] [--json]` reads the export and the trust inputs only. `--locked` is a directory (searched at any depth, symbolic links ignored) holding the copies fetched from the locked bucket, named `<12 digits>.ckpt`; an empty directory, a directory with no such files, or two files for one number is unusable input. `--tenant` pins the tenant; without it the export's own tenant field is trusted and a warning says so. An issuer key that is also a ledger key is unusable input.
+
+Exit code 0: no violation and anchored (or `--allow-unanchored`). 1: at least one violation. 2: unusable input. 3: no violation but not anchored (no locked comparison, or no checkpoints).
 
 Checks, with the violation code each raises:
 
@@ -89,18 +94,21 @@ Checks, with the violation code each raises:
 | Recomputed `entry_hash` equals the stored one | `entry_hash_mismatch` |
 | seq starts at 1 and has no gap or repeat; `prev_hash` equals the previous `entry_hash` (zeros for seq 1) | `chain_gap`, `chain_break` |
 | `frame_hash` and `payload_hash` match the frame when present; the frame decodes | `frame_hash_mismatch`, `payload_hash_mismatch`, `frame_malformed` |
-| The frame's document, key id and the entry match | `frame_binding` |
+| Entries with no frame are refused unless `--allow-erased` (their signatures cannot be checked) | `frame_erased` |
+| Within a document, a (key, session) pair's client sequence strictly increases, as the gateway enforces | `replay` |
 | A certificate with that serial is in the export, is signed by a trusted issuer and decodes | `cert_missing`, `cert_untrusted`, `cert_malformed` |
 | The certificate's key is the frame's `keyId` and verifies the frame signature (strict) | `cert_key_mismatch`, `bad_signature` |
-| `received_at_ms` is not before `not_before` and not after `not_after` plus the upload-only grace | `cert_window` |
+| `received_at_ms` is not before `not_before` (less skew) and not after `not_after` plus the upload-only grace | `cert_window` |
+| The signed claimed time is inside the certificate's life and not after receipt plus skew | `claimed_window`, `claimed_in_future` |
 | Every checkpoint is signed by a trusted ledger key, `n` is gapless, `prev_checkpoint_hash` links, `created_at_ms` does not go backwards | `checkpoint_signature`, `checkpoint_gap`, `checkpoint_chain`, `checkpoint_time` |
-| Each attested `(doc, seq, head_hash)` equals the export's entry; the export reaches that seq | `checkpoint_head_mismatch`, `truncated` |
+| Each attested `(doc, seq, head_hash)` equals the export's entry; the export reaches that seq; the entry was received no later than the checkpoint's time plus skew | `checkpoint_head_mismatch`, `truncated`, `received_after_checkpoint` |
+| Checkpoint tenant equals the pinned (or exported) tenant; the export's tenant equals the pinned one | `checkpoint_tenant`, `tenant_mismatch` |
+| A checkpoint never attests a document at or below a sequence an earlier checkpoint reached | `checkpoint_regress` |
 | With `--locked`: every locked checkpoint equals the export's copy, and the export has none the locked store lacks beyond the newest | `locked_mismatch`, `locked_missing`, `locked_extra` |
-| Entries with no frame must be explainable: allowed, reported as `erased` count | (info) |
 
 `received_at_ms` going backwards within a document is reported as a warning, not a violation: a gateway clock can step.
 
-The report lists totals (documents, entries, certificates, checkpoints, `entriesAfterLastCheckpoint`, `lastCheckpointAtMs`), every violation (capped at 1,000 with a count of the rest) and every warning.
+The report has `ok` (no violations), `anchored`, the number of locked copies compared, totals (documents, entries, certificates, checkpoints, erased, `entriesAfterLastCheckpoint`, `lastCheckpointAtMs`), every violation and every warning (each capped at 1,000 with a count of the rest).
 
 ## Invariants
 
@@ -120,10 +128,13 @@ The report lists totals (documents, entries, certificates, checkpoints, `entries
 | Object store down at checkpoint time | Checkpoint stays reserved; retried each tick; the checkpoint-age stat grows; editing continues |
 | Crash between reserve and upload | Re-uploaded on the next tick, same bytes, same key |
 | Two checkpoint writers | One wins `n`; the loser re-reads and retries; no duplicate objects |
-| Signer throws | No row is reserved; counted; retried next tick |
+| Signer throws, hangs or returns a signature that does not verify | No row is reserved; counted; retried next tick |
+| Bucket already holds different bytes for a reserved `n` | Never overwritten; counted; writer stops reserving new numbers until a human resolves it |
 | Database administrator edits or deletes entries | Verifier fails (hash, chain, checkpoint head or truncation) unless the edit is after the last checkpoint |
 | Database administrator replaces the whole database | Verifier fails against `--locked` copies |
-| Export with entries but no checkpoints | Passes chain and signature checks; reported with `checkpoints: 0` and every entry counted in `entriesAfterLastCheckpoint` |
+| Export with entries but no checkpoints | Passes chain and signature checks; reported with `checkpoints: 0`, every entry counted in `entriesAfterLastCheckpoint`, `anchored: false`, exit code 3 |
+| Export with frames stripped | `frame_erased` for each entry unless `--allow-erased` |
+| Gateway started without a tenant, a checkpoint directory, or with a group-readable or issuer-equal ledger key file | Refuses to start; the message names the variable and never prints key material |
 | Migration 003 on a database that already has log rows | Refuses with an explanation (pre-release only; there is no pre-ledger production data) |
 
 ## Known limits
@@ -132,4 +143,8 @@ The report lists totals (documents, entries, certificates, checkpoints, `entries
 - Receive time is the gateway's clock. A compromised gateway can lie about it. Checkpoint times from a second source (the locked bucket's own object timestamps) bound the lie.
 - Revocation after the fact does not invalidate old entries: the question the ledger answers is "was this certificate valid when the entry arrived".
 - One checkpoint writer per tenant per install. Phase 4 adds a lease.
-- The store accepts non-UUID document ids; only the control plane enforces UUIDs (see above).
+- The store accepts non-UUID document ids; only the control plane enforces UUIDs (see above). It does require 1 to 256 bytes of well-formed Unicode, so every id has one hash and one byte order.
+- The verifier cannot tell that the newest checkpoint was deleted from both the export and the locked bucket. Locked copies with a higher number than the export's last are reported (`locked_missing`).
+- Writer existence-check-then-put is not atomic without Object Lock.
+- The tenant string in an export is attacker-controlled; pin it with `--tenant`.
+- Replay detection covers entries with frames; an erased entry's session cannot be checked.

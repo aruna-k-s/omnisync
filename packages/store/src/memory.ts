@@ -113,7 +113,7 @@ export class MemoryDocumentStore implements DocumentStore, LedgerStore {
     if (last && cp.createdAtMs < last.createdAtMs) return false;
     for (const h of cp.heads) {
       const d = this.#docs.get(h.documentId);
-      if (!d || h.seq > d.headSeq || h.seq <= d.checkpointSeq) return false;
+      if (!d || h.seq <= d.checkpointSeq) return false; // a seq past the head has no row, so the hash check below refuses it
       // The attested hash must be the real entry's hash, not just whatever the caller read.
       const row = d.updates[h.seq - 1];
       if (!row || Buffer.compare(row.entryHash, h.headHash) !== 0) return false;

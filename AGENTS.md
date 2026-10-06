@@ -24,7 +24,7 @@ Current phase: **Phase 1 - MVP, week 6 done (ledger)**. Phase 0 exit gate (desig
 | Gateway demo | `pnpm --filter @omnisync/gateway dev` |
 | Run gateway / control plane | `pnpm --filter @omnisync/gateway serve` / `pnpm --filter @omnisync/control-plane start` (config via env, see `apps/control-plane/src/config.ts`) |
 | Export the ledger | `DATABASE_URL=... OMNISYNC_TENANT=acme pnpm --filter @omnisync/gateway export ledger.ndjson` |
-| Verify an export (no database) | `node packages/verifier/dist/cli.js verify ledger.ndjson --issuer <hex> --ledger-key <hex> [--locked dir]` |
+| Verify an export (no database) | `node packages/verifier/dist/cli.js verify ledger.ndjson --issuer <hex> --ledger-key <hex> --tenant acme --locked dir` (exit 0 anchored, 1 violations, 2 bad input, 3 consistent but not anchored) |
 | Regenerate protocol vectors | `pnpm --filter @omnisync/protocol vectors` (wire-format break: bump `PROTOCOL_VERSION`) |
 
 Node 22.12+, pnpm 10.
@@ -73,7 +73,8 @@ Changes here are never merged on AI review alone. Ask before editing, and the hu
 - Never log secrets, secret keys, tokens or document payloads.
 - Never disable certificate or signature verification, even in tests; use test keys instead.
 - Never sign a checkpoint with the certificate issuing key, or a certificate with the ledger key (separate keys, separate trust inputs).
-- Never upload a checkpoint before it is reserved in the database, and never reuse a checkpoint number.
+- Never upload a checkpoint before it is reserved in the database, never reuse a checkpoint number, and never overwrite a bucket object that holds different bytes.
+- Never report a ledger as verified without saying whether it was anchored to locked checkpoints.
 - Never add a field to the entry hash, or reorder its inputs, without a new `LEDGER_ENTRY_VERSION` and regenerated frozen vectors.
 - Never issue a certificate longer than 24h (default 12h) or without an enrollment proof of key possession.
 - Never skip the `email_verified` check or the login CSRF cookie binding in the OIDC flow.
