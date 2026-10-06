@@ -311,6 +311,21 @@ describe("checkpoint", () => {
     expect(() => decodeCheckpoint(new Uint8Array(0))).toThrow(CheckpointError);
   });
 
+  it("decoding is canonical: trailing bytes and unsorted heads are refused even if someone signed them", async () => {
+    const bytes = await signCheckpoint(body(), signer);
+    expect(() => decodeCheckpoint(new Uint8Array([...bytes, 0]))).toThrow(CheckpointError);
+
+    // Swap the two head records (same length) to build a structurally unsorted object.
+    const at = (needle: number[]) => bytes.findIndex((_, i) => needle.every((b, j) => bytes[i + j] === b));
+    const first = at([0x05, ...new TextEncoder().encode("a-doc")]);
+    const second = at([0x05, ...new TextEncoder().encode("b-doc")]);
+    const swapped = bytes.slice();
+    swapped.set(bytes.slice(second, second + 39), first);
+    swapped.set(bytes.slice(first, first + 39), second);
+    expect(() => decodeCheckpoint(swapped)).toThrow(/ascending/);
+    expect(() => decodeCheckpoint(bytes)).not.toThrow();
+  });
+
   it("rejects a wrong-length signature from a faulty signer", async () => {
     await expect(signCheckpoint(body(), { keyId: ledgerKey.keyId, sign: () => new Uint8Array(10) })).rejects.toThrow(CheckpointError);
   });

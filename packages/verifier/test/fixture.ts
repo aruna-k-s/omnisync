@@ -57,7 +57,21 @@ export class Fixture {
     return u;
   }
 
-  append(doc: string, user: User, opts: { payload?: Uint8Array; claimedAtMs?: number; receivedAtMs?: number } = {}): EntryRecord {
+  append(
+    doc: string,
+    user: User,
+    opts: {
+      payload?: Uint8Array;
+      claimedAtMs?: number;
+      receivedAtMs?: number;
+      /** Sign for a different document, so the signature is valid but not for this one. */
+      signForDoc?: string;
+      /** Sign with another key while attributing the entry to `user`'s certificate. */
+      signWith?: KeyPair;
+      /** Record a payload hash that does not match the payload (the chain itself stays consistent). */
+      payloadHash?: Uint8Array;
+    } = {},
+  ): EntryRecord {
     const head = this.#heads.get(doc);
     const seq = (head?.seq ?? 0) + 1;
     const k = `${doc}:${bytesToHex(user.serial)}`;
@@ -65,10 +79,10 @@ export class Fixture {
     this.#clientSeq.set(k, clientSeq);
     const payload = opts.payload ?? new Uint8Array([seq & 0xff, 7, 7]);
     const receivedAtMs = opts.receivedAtMs ?? (this.now += 1000);
-    const frame = signUpdate({ docId: doc, sessionId: 1, seq: clientSeq, claimedAtMs: opts.claimedAtMs ?? receivedAtMs - 500, payload }, user.key);
+    const frame = signUpdate({ docId: opts.signForDoc ?? doc, sessionId: 1, seq: clientSeq, claimedAtMs: opts.claimedAtMs ?? receivedAtMs - 500, payload }, opts.signWith ?? user.key);
     const prevHash = head?.hash ?? ZERO_HASH;
     const frameHash = hashBytes(frame);
-    const payloadHash = hashBytes(payload);
+    const payloadHash = opts.payloadHash ?? hashBytes(payload);
     const hash = entryHash({ documentId: doc, seq, prevHash, receivedAtMs, keyEpoch: 0, certSerial: user.serial, frameHash, payloadHash });
     const e: EntryRecord = { t: "entry", doc, seq, receivedAtMs, certSerial: user.serial, keyEpoch: 0, prevHash, entryHash: hash, frameHash, payloadHash, frame };
     this.entries.push(e);
@@ -77,10 +91,10 @@ export class Fixture {
   }
 
   /** Signs a checkpoint over every document that moved since the last one. Returns its bytes, or undefined if nothing moved. */
-  async checkpoint(signer = ledgerSignerFromKeyPair(ledger), createdAtMs = this.now): Promise<Uint8Array | undefined> {
+  async checkpoint(signer = ledgerSignerFromKeyPair(ledger), createdAtMs = this.now, all = false): Promise<Uint8Array | undefined> {
     const moved: CheckpointHead[] = [];
     for (const [documentId, h] of [...this.#heads.entries()].sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
-      if (h.seq > h.covered) moved.push({ documentId, seq: h.seq, headHash: h.hash });
+      if (all || h.seq > h.covered) moved.push({ documentId, seq: h.seq, headHash: h.hash });
     }
     if (moved.length === 0) return undefined;
     const bytes = await signCheckpoint(

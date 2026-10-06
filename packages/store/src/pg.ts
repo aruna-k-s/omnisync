@@ -201,22 +201,23 @@ export class PgDocumentStore implements DocumentStore, LedgerStore {
       const lastN = Number(last.rows[0]?.n ?? 0);
       const lastHash = last.rows[0] ? toBytes(last.rows[0].checkpoint_hash) : ZERO_HASH;
       if (cp.n !== lastN + 1 || !buf(cp.prevHash).equals(buf(lastHash))) return false;
-      if (cp.heads.length > 0) {
-        const ids = cp.heads.map((h) => h.documentId);
-        const seqs = cp.heads.map((h) => h.seq);
-        // Heads only grow, so a head that is within the log now stays within it. Refuse anything ahead of the log.
-        const ok = await c.query(
-          `SELECT count(*)::int AS n FROM documents d JOIN unnest($1::text[], $2::bigint[]) AS v(id, seq)
-             ON d.id = v.id AND v.seq <= d.head_seq`,
-          [ids, seqs],
-        );
-        if ((ok.rows[0] as { n: number }).n !== cp.heads.length) return false;
-        await c.query(
-          `UPDATE documents d SET checkpoint_seq = GREATEST(d.checkpoint_seq, v.seq)
-             FROM unnest($1::text[], $2::bigint[]) AS v(id, seq) WHERE d.id = v.id`,
-          [ids, seqs],
-        );
-      }
+      if (cp.heads.length === 0) return false; // a checkpoint attests something
+      const ids = cp.heads.map((h) => h.documentId);
+      const seqs = cp.heads.map((h) => h.seq);
+      // Every head must move strictly forward and stay within the log. A stale read (another writer already
+      // covered it) is refused here, under the lock, so no checkpoint ever repeats or regresses a head.
+      const ok = await c.query(
+        `SELECT count(*)::int AS n FROM documents d JOIN unnest($1::text[], $2::bigint[]) AS v(id, seq)
+           ON d.id = v.id AND v.seq <= d.head_seq AND v.seq > d.checkpoint_seq`,
+        [ids, seqs],
+      );
+      if ((ok.rows[0] as { n: number }).n !== cp.heads.length) return false;
+      await c.query(
+        `UPDATE documents d SET checkpoint_seq = GREATEST(d.checkpoint_seq, v.seq)
+           FROM unnest($1::text[], $2::bigint[]) AS v(id, seq) WHERE d.id = v.id`,
+        [ids, seqs],
+      );
+
       await c.query("INSERT INTO ledger_checkpoints (n, created_at_ms, checkpoint_hash, bytes) VALUES ($1, $2, $3, $4)", [
         cp.n,
         cp.createdAtMs,

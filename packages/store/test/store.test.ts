@@ -145,6 +145,32 @@ describe.skipIf(!url)("PostgreSQL store", () => {
     await expect(docs.pool.query("DELETE FROM ledger_checkpoints")).rejects.toThrow(/append-only/);
   });
 
+  it("document order is UTF-8 byte order even in a database whose collation sorts differently", async (ctx) => {
+    const name = `icu_${randomBytes(4).toString("hex")}`;
+    try {
+      await admin.query(`CREATE DATABASE ${name} LOCALE_PROVIDER icu ICU_LOCALE 'en-US' LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`);
+    } catch {
+      return ctx.skip(); // this server was built without ICU
+    }
+    const u = new URL(url as string);
+    u.pathname = `/${name}`;
+    const store = new PgDocumentStore({ connectionString: u.toString() });
+    try {
+      await migrate(store.pool);
+      const ids = ["b", "a", "B", "ä", "a1"];
+      // Sanity: the default collation really does disagree with byte order here.
+      const dflt = await store.pool.query<{ r: string }>("SELECT string_agg(x, ',' ORDER BY x) AS r FROM unnest($1::text[]) x", [ids]);
+      expect(dflt.rows[0]?.r).not.toBe("B,a,a1,b,ä");
+      for (const id of ids) await store.appendUpdates(id, [upd(1)]);
+      expect((await store.pendingHeads(10)).map((h) => h.documentId)).toEqual(["B", "a", "a1", "b", "ä"]);
+      expect(await store.listDocuments(undefined, 10)).toEqual(["B", "a", "a1", "b", "ä"]);
+      expect(await store.listDocuments("a", 10)).toEqual(["a1", "b", "ä"]);
+    } finally {
+      await store.close();
+      await admin.query(`DROP DATABASE ${name}`);
+    }
+  });
+
   it("the database refuses a checkpoint position beyond the log", async () => {
     const docs = open();
     await docs.appendUpdates("cp-bound", [upd(1)]);

@@ -189,6 +189,14 @@ export function documentStoreContract(name: string, make: () => Promise<Store>):
       await s.close();
     });
 
+    it("orders pending heads by UTF-8 bytes, whatever the database collation", async () => {
+      const s = await make();
+      for (const id of ["b", "a", "B", "ä", "a1"]) await s.appendUpdates(id, [upd(1)]);
+      expect((await s.pendingHeads(10)).map((h) => h.documentId)).toEqual(["B", "a", "a1", "b", "ä"]);
+      expect((await s.pendingHeads(2)).map((h) => h.documentId)).toEqual(["B", "a"]);
+      await s.close();
+    });
+
     it("reports pending heads and entry counts until a checkpoint covers them", async () => {
       const s = await make();
       expect(await s.pendingHeads(10)).toEqual([]);
@@ -242,6 +250,25 @@ export function documentStoreContract(name: string, make: () => Promise<Store>):
       expect(await s.reserveCheckpoint(checkpoint(1, ZERO_HASH, [{ documentId: "a", seq: 2, headHash: new Uint8Array(32) }]))).toBe(false);
       expect(await s.pendingEntries()).toBe(1);
       expect(await s.lastCheckpoint()).toBeUndefined();
+      await s.close();
+    });
+
+    it("refuses a stale or empty checkpoint: every head must move strictly forward", async () => {
+      const s = await make();
+      await s.appendUpdates("a", [upd(1)]);
+      await s.appendUpdates("b", [upd(1)]);
+      const heads = await s.pendingHeads(10);
+      const first = checkpoint(1, ZERO_HASH, heads);
+      expect(await s.reserveCheckpoint(first)).toBe(true);
+      // A second writer that read the same heads before the first committed arrives late with the next n.
+      expect(await s.reserveCheckpoint(checkpoint(2, first.hash, heads))).toBe(false);
+      // Partially stale is refused too: b has moved on, a has not.
+      await s.appendUpdates("b", [upd(2)]);
+      const mixed = [heads[0] as (typeof heads)[number], { ...(heads[1] as (typeof heads)[number]), seq: 2 }];
+      expect(await s.reserveCheckpoint(checkpoint(2, first.hash, mixed))).toBe(false);
+      expect(await s.reserveCheckpoint(checkpoint(2, first.hash, []))).toBe(false);
+      expect((await s.listCheckpoints(0, 10)).map((c) => c.n)).toEqual([1]);
+      expect(await s.pendingEntries()).toBe(1);
       await s.close();
     });
 

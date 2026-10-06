@@ -261,6 +261,38 @@ describe("verifier: tamper detection", () => {
     expect(codes(await run(f.lines()))).toEqual(expect.arrayContaining(["cert_window", "claimed_window", "claimed_in_future"]));
   });
 
+  it("a payload that does not match its recorded hash is caught even when the chain is consistent", async () => {
+    const f = new Fixture();
+    f.append("d", f.addUser(1), { payloadHash: new Uint8Array(32).fill(5) });
+    expect(codes(await run(f.lines()))).toEqual(["payload_hash_mismatch"]);
+  });
+
+  it("a signature that is valid for another document, or from another key, is caught on its own", async () => {
+    const f = new Fixture();
+    const u = f.addUser(1);
+    f.append("d", u, { signForDoc: "other-doc" });
+    expect(codes(await run(f.lines()))).toEqual(["bad_signature"]);
+
+    const g = new Fixture();
+    g.append("d", g.addUser(1), { signWith: stranger }); // a valid signature, but not by the certificate's key
+    expect(codes(await run(g.lines()))).toEqual(["cert_key_mismatch"]);
+  });
+
+  it("checkpoint times going backwards and a checkpoint that repeats an attested head are caught", async () => {
+    const f = new Fixture();
+    f.append("d", f.addUser(1));
+    await f.checkpoint(undefined, T0 + 10 * HOUR);
+    f.append("d", f.users[0]!);
+    await f.checkpoint(undefined, T0 + 5 * HOUR); // earlier than its predecessor
+    expect(codes(await run(f.lines()))).toEqual(["checkpoint_time"]);
+
+    const g = new Fixture();
+    g.append("d", g.addUser(1));
+    await g.checkpoint();
+    await g.checkpoint(undefined, undefined, true); // attests the same head again
+    expect(codes(await run(g.lines()))).toEqual(["checkpoint_regress"]);
+  });
+
   it("an entry with no certificate is caught", async () => {
     const f = await healthy();
     const lines = f.lines();
@@ -282,6 +314,18 @@ describe("verifier: tamper detection", () => {
     expect((await run(interleaved)).ok).toBe(false);
     expect(codes(await run([]))).toContain("export_order");
     expect(await verifyLedger([null, 5, "x", []], trust)).toMatchObject({ ok: false });
+  });
+
+  it("entries of one document must be contiguous (the verifier streams), and that is all it objects to", async () => {
+    const f = new Fixture();
+    const u = f.addUser(1);
+    f.append("a", u);
+    f.append("a", u);
+    f.append("b", u);
+    const [meta, cert, a1, a2, b1] = f.lines() as [string, string, string, string, string];
+    const r = await run([meta, cert, a1, b1, a2]);
+    expect(codes(r)).toEqual(["export_order"]);
+    expect(r.counts.entries).toBe(3);
   });
 
   it("a checkpoint for a different tenant is caught", async () => {

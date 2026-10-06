@@ -109,9 +109,10 @@ export class MemoryDocumentStore implements DocumentStore, LedgerStore {
     const last = this.#checkpoints[this.#checkpoints.length - 1];
     if (cp.n !== (last?.n ?? 0) + 1) return false;
     if (hex(cp.prevHash) !== hex(last?.hash ?? ZERO_HASH)) return false;
+    if (cp.heads.length === 0) return false;
     for (const h of cp.heads) {
       const d = this.#docs.get(h.documentId);
-      if (!d || h.seq > d.headSeq) return false;
+      if (!d || h.seq > d.headSeq || h.seq <= d.checkpointSeq) return false;
     }
     for (const h of cp.heads) {
       const d = this.#docs.get(h.documentId) as DocState;
