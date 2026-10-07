@@ -1,0 +1,35 @@
+{
+  "name": "@omnisync/sdk",
+  "version": "0.1.0",
+  "description": "OmniSync client SDK: device key, durable outbox, batching, offline-first sync (framework-free)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@omnisync/crypto": "workspace:*",
+    "@omnisync/engine": "workspace:*",
+    "@omnisync/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@omnisync/config": "workspace:*",
+    "@omnisync/gateway": "workspace:*",
+    "@omnisync/store": "workspace:*",
+    "@types/ws": "^8.18.2",
+    "fake-indexeddb": "^6.2.5",
+    "fast-check": "^4.10.2",
+    "ws": "^8.22.0"
+  }
+}
