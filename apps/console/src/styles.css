@@ -1,0 +1,41 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --fg: #1c2330;
+  --muted: #5d6676;
+  --panel: #ffffff;
+  --line: #dde1e8;
+  --accent: #2557d6;
+  --ok: #17803d;
+  --bad: #b3261e;
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #11151c; --fg: #e6e9ef; --muted: #98a1b2; --panel: #1a202b; --line: #2b3340; --accent: #7ba2ff; --ok: #5bd18a; --bad: #ff8a80; }
+}
+body { margin: 0; background: var(--bg); color: var(--fg); }
+header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+h1 { font-size: 17px; margin: 0; }
+h2 { margin-top: 0; }
+nav { display: flex; gap: 4px; flex: 1; }
+nav button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.who { color: var(--muted); }
+main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+tr[tabindex] { cursor: pointer; }
+tr.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-top: 16px; }
+.panel.ok { border-left: 4px solid var(--ok); }
+.panel.bad { border-left: 4px solid var(--bad); }
+.signin { max-width: 460px; margin: 60px auto; }
+.muted { color: var(--muted); }
+.error { color: var(--bad); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+button, select { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: default; }
+button.danger { color: var(--bad); border-color: var(--bad); }
+code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+tr[data-verified="true"] td:first-child { color: var(--ok); font-weight: 700; }
+tr[data-verified="false"] td:first-child { color: var(--bad); font-weight: 700; }

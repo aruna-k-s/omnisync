@@ -1,0 +1,36 @@
+{
+  "name": "@omnisync/console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Admin console (Angular): people, documents, grants, one-click revoke, and an in-browser ledger verifier",
+  "type": "module",
+  "scripts": {
+    "build": "ng build",
+    "start": "ng serve",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@angular/common": "^21.2.25",
+    "@angular/compiler": "^21.2.25",
+    "@angular/core": "^21.2.25",
+    "@angular/platform-browser": "^21.2.25",
+    "@omnisync/crypto": "workspace:*",
+    "@omnisync/protocol": "workspace:*",
+    "@omnisync/verifier": "workspace:*",
+    "buffer": "^6.0.3",
+    "rxjs": "^7.8.2",
+    "tslib": "^2.8.1"
+  },
+  "devDependencies": {
+    "@angular/build": "^21.2.25",
+    "@angular/cli": "^21.2.25",
+    "@angular/compiler-cli": "^21.2.25",
+    "@omnisync/config": "workspace:*",
+    "@omnisync/control-plane": "workspace:*",
+    "@omnisync/gateway": "workspace:*",
+    "@omnisync/store": "workspace:*",
+    "playwright-core": "1.56.0",
+    "typescript": "5.9.3"
+  }
+}

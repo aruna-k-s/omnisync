@@ -6,3 +6,5 @@ bench/results/*.json
 *.log
 .env
 .claude/settings.local.json
+.angular/
+out-tsc/

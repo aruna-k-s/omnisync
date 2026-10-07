@@ -1,0 +1,5 @@
+{
+  "extends": "../../packages/config/tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "types": ["node"], "experimentalDecorators": true, "lib": ["ES2022", "DOM"] },
+  "include": ["test", "src/app/api.ts", "src/app/session.ts", "src/app/ledger.ts", "src/app/format.ts"]
+}
