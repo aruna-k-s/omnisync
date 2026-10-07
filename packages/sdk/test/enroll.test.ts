@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { decodeCertificate } from "@omnisync/crypto";
 import { OmniSyncClient } from "../src/client.js";
-import { EnrollmentError, enroll, loginUrl } from "../src/enroll.js";
+import { EnrollmentError, enroll } from "../src/enroll.js";
+import { loginUrl } from "../src/session.js";
 import { createDeviceKey } from "../src/keys.js";
 import { MemoryOutbox } from "../src/outbox.js";
 import { World, fakeControlPlane } from "./harness.js";

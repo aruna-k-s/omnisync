@@ -1,6 +1,7 @@
 import { Injectable, signal } from "@angular/core";
 import { AdminApi, ApiError } from "./api.js";
-import { loginUrl, parseConfig, returnToOf, sessionFromHash, type ConsoleConfig } from "./session.js";
+import { loginUrl, returnToOf, sessionFromHash } from "@omnisync/sdk/session";
+import { parseConfig, type ConsoleConfig } from "./session.js";
 
 export interface Me {
   id: string;
@@ -44,7 +45,7 @@ export class SessionService {
   }
 
   signIn(): void {
-    location.assign(loginUrl(this.#config.controlPlane, returnToOf(location)));
+    location.assign(loginUrl(this.#config.controlPlane, { returnTo: returnToOf(location) }));
   }
 
   signOut(message?: string): void {

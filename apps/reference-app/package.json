@@ -1,0 +1,39 @@
+{
+  "name": "@omnisync/reference-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference app (Angular): a collaborative workbook of tables and notes over @omnisync/sdk, offline-first, signed edits",
+  "type": "module",
+  "scripts": {
+    "build": "ng build",
+    "start": "ng serve",
+    "demo": "tsx --tsconfig ../control-plane/tsconfig.json demo/serve.ts",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@angular/common": "^21.2.25",
+    "@angular/compiler": "^21.2.25",
+    "@angular/core": "^21.2.25",
+    "@angular/platform-browser": "^21.2.25",
+    "@omnisync/sdk": "workspace:*",
+    "rxjs": "^7.8.2",
+    "tslib": "^2.8.1"
+  },
+  "devDependencies": {
+    "@angular/build": "^21.2.25",
+    "@angular/cli": "^21.2.25",
+    "@angular/compiler-cli": "^21.2.25",
+    "@omnisync/config": "workspace:*",
+    "@omnisync/control-plane": "workspace:*",
+    "@omnisync/crypto": "workspace:*",
+    "@omnisync/engine": "workspace:*",
+    "@omnisync/gateway": "workspace:*",
+    "@omnisync/protocol": "workspace:*",
+    "@omnisync/store": "workspace:*",
+    "@omnisync/verifier": "workspace:*",
+    "fast-check": "^4.10.2",
+    "playwright-core": "1.56.0",
+    "typescript": "5.9.3"
+  }
+}

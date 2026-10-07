@@ -1,0 +1,5 @@
+{
+  "extends": "../../packages/config/tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "types": ["node"], "experimentalDecorators": true, "lib": ["ES2024", "DOM"] },
+  "include": ["test", "demo", "src/app/workbook.ts", "src/app/text-diff.ts", "src/app/recent.ts", "src/app/config.ts", "src/app/cert-cache.ts"]
+}

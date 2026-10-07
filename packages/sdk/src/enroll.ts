@@ -43,11 +43,6 @@ const fromB64url = (s: string): Uint8Array => {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 };
 
-/** Where to send the browser to sign in. The callback returns a session token for `enroll`. */
-export function loginUrl(controlPlaneUrl: string): string {
-  return `${controlPlaneUrl.replace(/\/+$/, "")}/v1/auth/login`;
-}
-
 /** Proves possession of the device key and receives a session certificate for it. */
 export async function enroll(o: EnrollOptions): Promise<Enrollment> {
   const f = o.fetch ?? globalThis.fetch.bind(globalThis);
