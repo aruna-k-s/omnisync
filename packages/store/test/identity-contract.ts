@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LastAdminError, roleAtLeast, type AuditInput, type CertificateRecord, type IdentityStore, type Principal } from "../src/index.js";
+import { LastAdminError, roleAtLeast, type AuditInput, type CertificateRecord, type DeviceAuthInput, type IdentityStore, type Principal } from "../src/index.js";
 
 const NOW = 1_800_000_000_000;
 const audit = (action: string, target = "t"): AuditInput => ({ atMs: NOW, actor: "system", action, target });
@@ -277,6 +277,153 @@ export function identityStoreContract(name: string, make: () => Promise<Identity
       expect(all[all.length - 1]).toMatchObject({ atMs: NOW + 5, actor: a.id, action: "ledger.export", target: "acme", detail: "x" });
       expect(await s.listPrincipals(undefined, 10)).toHaveLength(1);
       await s.close();
+    });
+
+    describe("device authorisations", () => {
+      const dev = (n: number, over: Partial<DeviceAuthInput> = {}): DeviceAuthInput => ({
+        deviceHash: new Uint8Array(32).fill(n),
+        userCode: "BCDFGHJ" + "KLMNPQRS"[n % 8],
+        label: `laptop ${n}`,
+        atMs: NOW,
+        expiresAtMs: NOW + 600_000,
+        ...over,
+      });
+      const hash = (n: number) => new Uint8Array(32).fill(n);
+
+      it("creates a request that can be read by its user code until it expires, with one audit event", async () => {
+        const s = await make();
+        const before = (await s.listAudit(0, 100)).length;
+        expect(await s.createDeviceAuth(dev(1), audit("device.start", "x"))).toBe(true);
+        expect((await s.listAudit(0, 100)).length).toBe(before + 1);
+        expect(await s.getDeviceAuth(dev(1).userCode, NOW + 1)).toEqual({ userCode: dev(1).userCode, label: "laptop 1", createdAtMs: NOW, expiresAtMs: NOW + 600_000, status: "pending" });
+        expect(await s.getDeviceAuth(dev(1).userCode, NOW + 600_000)).toBeUndefined(); // expiry is exclusive
+        expect(await s.getDeviceAuth("ZZZZZZZZ", NOW)).toBeUndefined();
+        await s.close();
+      });
+
+      it("refuses a user code or device hash that is already in use, changing and auditing nothing", async () => {
+        const s = await make();
+        expect(await s.createDeviceAuth(dev(1), audit("device.start"))).toBe(true);
+        const n = (await s.listAudit(0, 100)).length;
+        expect(await s.createDeviceAuth({ ...dev(2), userCode: dev(1).userCode }, audit("device.start"))).toBe(false);
+        expect(await s.createDeviceAuth({ ...dev(2), deviceHash: hash(1) }, audit("device.start"))).toBe(false);
+        expect((await s.listAudit(0, 100)).length).toBe(n);
+        await s.close();
+      });
+
+      it("an expired request does not block its user code from being reused", async () => {
+        const s = await make();
+        await s.createDeviceAuth(dev(1), audit("device.start"));
+        expect(await s.createDeviceAuth({ ...dev(2), userCode: dev(1).userCode, atMs: NOW + 700_000, expiresAtMs: NOW + 1_300_000 }, audit("device.start"))).toBe(true);
+        expect(await s.pollDeviceAuth(hash(1), NOW + 700_001, 5000)).toEqual({ state: "expired" });
+        await s.close();
+      });
+
+      it("an expired request that the bounded sweep does not reach still cannot block a new one", async () => {
+        const s = await make();
+        const letters = "BCDFGHJKLMNPQRSTVWXZ";
+        const codeOf = (i: number) => Array.from({ length: 8 }, (_, k) => letters[Math.floor(i / 20 ** k) % 20]).join("");
+        for (let i = 0; i < 150; i++) {
+          // expiry grows with i, so the oldest are swept first and the newest are left behind
+          await s.createDeviceAuth({ deviceHash: new Uint8Array(32).fill(0).map((_, k) => (k === 0 ? i + 1 : 0)), userCode: codeOf(i), label: "", atMs: NOW, expiresAtMs: NOW + 1000 + i }, audit("device.start"));
+        }
+        const later = NOW + 5000;
+        const fresh = new Uint8Array(32).fill(250);
+        expect(await s.createDeviceAuth({ deviceHash: fresh, userCode: codeOf(149), label: "", atMs: later, expiresAtMs: later + 600_000 }, audit("device.start"))).toBe(true);
+        const newestHash = new Uint8Array(32).fill(0).map((_, k) => (k === 0 ? 149 : 0)); // the hash of request 148
+        expect(await s.createDeviceAuth({ deviceHash: newestHash, userCode: codeOf(900), label: "", atMs: later, expiresAtMs: later + 600_000 }, audit("device.start"))).toBe(true);
+        await s.close();
+      });
+
+      it("pending until decided; approve hands the principal over exactly once", async () => {
+        const s = await make();
+        const a = await person(s, "alice");
+        await s.createDeviceAuth(dev(1), audit("device.start"));
+        expect(await s.pollDeviceAuth(hash(1), NOW + 1000, 5000)).toEqual({ state: "pending" });
+        expect(await s.decideDeviceAuth(dev(1).userCode, "approve", a.id, NOW + 2000, audit("device.approve"))).toBe("ok");
+        expect((await s.getDeviceAuth(dev(1).userCode, NOW + 2000))?.status).toBe("approved");
+        expect(await s.pollDeviceAuth(hash(1), NOW + 3000, 5000)).toEqual({ state: "approved", principalId: a.id, userCode: dev(1).userCode, label: "laptop 1" });
+        expect(await s.pollDeviceAuth(hash(1), NOW + 9000, 5000)).toEqual({ state: "expired" }); // consumed
+        expect(await s.getDeviceAuth(dev(1).userCode, NOW + 3000)).toBeUndefined();
+        await s.close();
+      });
+
+      it("deny is reported once, and a decision cannot be changed", async () => {
+        const s = await make();
+        const a = await person(s, "alice");
+        await s.createDeviceAuth(dev(1), audit("device.start"));
+        await s.createDeviceAuth(dev(2), audit("device.start"));
+        expect(await s.decideDeviceAuth(dev(1).userCode, "deny", a.id, NOW + 10, audit("device.deny"))).toBe("ok");
+        expect(await s.decideDeviceAuth(dev(1).userCode, "approve", a.id, NOW + 11, audit("device.approve"))).toBe("decided");
+        expect(await s.decideDeviceAuth(dev(2).userCode, "approve", a.id, NOW + 12, audit("device.approve"))).toBe("ok");
+        expect(await s.decideDeviceAuth(dev(2).userCode, "deny", a.id, NOW + 13, audit("device.deny"))).toBe("decided");
+        expect(await s.pollDeviceAuth(hash(1), NOW + 20, 5000)).toEqual({ state: "denied" });
+        expect(await s.pollDeviceAuth(hash(1), NOW + 9000, 5000)).toEqual({ state: "expired" });
+        expect(await s.pollDeviceAuth(hash(2), NOW + 9000, 5000)).toEqual({ state: "approved", principalId: a.id, userCode: dev(2).userCode, label: "laptop 2" });
+        await s.close();
+      });
+
+      it("a refused decision writes no audit event; unknown and expired codes are unknown", async () => {
+        const s = await make();
+        const a = await person(s, "alice");
+        await s.createDeviceAuth(dev(1), audit("device.start"));
+        await s.decideDeviceAuth(dev(1).userCode, "approve", a.id, NOW + 1, audit("device.approve"));
+        const n = (await s.listAudit(0, 100)).length;
+        expect(await s.decideDeviceAuth(dev(1).userCode, "deny", a.id, NOW + 2, audit("device.deny"))).toBe("decided");
+        expect(await s.decideDeviceAuth("ZZZZZZZZ", "approve", a.id, NOW + 2, audit("device.approve"))).toBe("unknown");
+        expect(await s.decideDeviceAuth(dev(1).userCode, "approve", a.id, NOW + 600_000, audit("device.approve"))).toBe("unknown");
+        expect((await s.listAudit(0, 100)).length).toBe(n);
+        await s.close();
+      });
+
+      it("polling faster than the interval answers slow_down, and that poll counts", async () => {
+        const s = await make();
+        await s.createDeviceAuth(dev(1), audit("device.start"));
+        expect(await s.pollDeviceAuth(hash(1), NOW + 10_000, 5000)).toEqual({ state: "pending" });
+        expect(await s.pollDeviceAuth(hash(1), NOW + 12_000, 5000)).toEqual({ state: "slow_down" });
+        expect(await s.pollDeviceAuth(hash(1), NOW + 16_000, 5000)).toEqual({ state: "slow_down" }); // 4 s after the last (slow) poll
+        expect(await s.pollDeviceAuth(hash(1), NOW + 21_000, 5000)).toEqual({ state: "pending" });
+        expect(await s.pollDeviceAuth(hash(1), NOW + 26_000, 5000)).toEqual({ state: "pending" }); // exactly the interval is fine
+        await s.close();
+      });
+
+      it("the first poll is never too early, and an approval is delivered even to a fast poller", async () => {
+        const s = await make();
+        const a = await person(s, "alice");
+        await s.createDeviceAuth(dev(1), audit("device.start"));
+        expect(await s.pollDeviceAuth(hash(1), NOW, 5000)).toEqual({ state: "pending" });
+        await s.decideDeviceAuth(dev(1).userCode, "approve", a.id, NOW + 1, audit("device.approve"));
+        expect(await s.pollDeviceAuth(hash(1), NOW + 2, 5000)).toMatchObject({ state: "approved", principalId: a.id });
+        await s.close();
+      });
+
+      it("polling after expiry (or for a code that never existed) is expired", async () => {
+        const s = await make();
+        await s.createDeviceAuth(dev(1), audit("device.start"));
+        expect(await s.pollDeviceAuth(hash(1), NOW + 599_999, 5000)).toEqual({ state: "pending" });
+        expect(await s.pollDeviceAuth(hash(1), NOW + 600_000, 5000)).toEqual({ state: "expired" });
+        expect(await s.pollDeviceAuth(hash(9), NOW, 5000)).toEqual({ state: "expired" });
+        await s.close();
+      });
+
+      it("a later request may reuse the device hash and user code of an expired one", async () => {
+        const s = await make();
+        await s.createDeviceAuth(dev(1), audit("device.start"));
+        const later = { ...dev(1), atMs: NOW + 700_000, expiresAtMs: NOW + 1_300_000 };
+        expect(await s.createDeviceAuth(later, audit("device.start"))).toBe(true);
+        expect(await s.pollDeviceAuth(hash(1), NOW + 700_001, 5000)).toEqual({ state: "pending" });
+        await s.close();
+      });
+
+      it("keeps a request whose principal is later disabled readable, so the service can refuse to issue", async () => {
+        const s = await make();
+        const a = await person(s, "alice");
+        await s.createDeviceAuth(dev(1), audit("device.start"));
+        await s.decideDeviceAuth(dev(1).userCode, "approve", a.id, NOW + 1, audit("device.approve"));
+        await s.disablePrincipal(a.id, NOW + 2, audit("principal.disable", a.id));
+        expect(await s.pollDeviceAuth(hash(1), NOW + 6000, 5000)).toMatchObject({ state: "approved", principalId: a.id });
+        await s.close();
+      });
     });
   });
 }

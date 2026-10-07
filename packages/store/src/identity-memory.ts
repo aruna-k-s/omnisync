@@ -6,6 +6,9 @@ import type {
   AuthorizeQuery,
   AuthorizeResult,
   CertificateRecord,
+  DeviceAuth,
+  DeviceAuthInput,
+  DevicePoll,
   DocumentRecord,
   Grant,
   GrantGuard,
@@ -16,6 +19,16 @@ import type {
 
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 
+interface DeviceRow {
+  userCode: string;
+  label: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  status: "pending" | "approved" | "denied";
+  principalId?: string;
+  lastPollMs?: number;
+}
+
 /** Reference IdentityStore. Same contract tests as Postgres. */
 export class MemoryIdentityStore implements IdentityStore {
   readonly #principals = new Map<string, Principal>();
@@ -24,6 +37,7 @@ export class MemoryIdentityStore implements IdentityStore {
   readonly #grants = new Map<string, Grant>();
   readonly #audit: AuditEvent[] = [];
   readonly #documents = new Map<string, DocumentRecord>();
+  readonly #devices = new Map<string, DeviceRow>(); // by hex of the device hash
 
   #log(a: AuditInput): void {
     this.#audit.push({ ...a, detail: a.detail ?? "", id: this.#audit.length + 1 });
@@ -195,6 +209,59 @@ export class MemoryIdentityStore implements IdentityStore {
 
   async listAudit(afterId: number, limit: number): Promise<AuditEvent[]> {
     return this.#audit.filter((e) => e.id > afterId).slice(0, limit);
+  }
+
+  async createDeviceAuth(input: DeviceAuthInput, audit: AuditInput): Promise<boolean> {
+    const key = hex(input.deviceHash);
+    let purged = 0;
+    for (const [k, d] of this.#devices) {
+      if (d.expiresAtMs <= input.atMs && (purged++ < 100 || k === key || d.userCode === input.userCode)) this.#devices.delete(k);
+    }
+    if (this.#devices.has(key)) return false;
+    for (const d of this.#devices.values()) if (d.userCode === input.userCode) return false;
+    this.#devices.set(key, { userCode: input.userCode, label: input.label, createdAtMs: input.atMs, expiresAtMs: input.expiresAtMs, status: "pending" });
+    this.#log(audit);
+    return true;
+  }
+
+  #deviceByCode(userCode: string, atMs: number): DeviceRow | undefined {
+    for (const d of this.#devices.values()) if (d.userCode === userCode && d.expiresAtMs > atMs) return d;
+    return undefined;
+  }
+
+  async getDeviceAuth(userCode: string, atMs: number): Promise<DeviceAuth | undefined> {
+    const d = this.#deviceByCode(userCode, atMs);
+    return d && { userCode: d.userCode, label: d.label, createdAtMs: d.createdAtMs, expiresAtMs: d.expiresAtMs, status: d.status };
+  }
+
+  async decideDeviceAuth(userCode: string, decision: "approve" | "deny", principalId: string, atMs: number, audit: AuditInput): Promise<"ok" | "unknown" | "decided"> {
+    const d = this.#deviceByCode(userCode, atMs);
+    if (!d) return "unknown";
+    if (d.status !== "pending") return "decided";
+    d.status = decision === "approve" ? "approved" : "denied";
+    if (decision === "approve") d.principalId = principalId;
+    this.#log(audit);
+    return "ok";
+  }
+
+  async pollDeviceAuth(deviceHash: Uint8Array, atMs: number, minIntervalMs: number): Promise<DevicePoll> {
+    const key = hex(deviceHash);
+    const d = this.#devices.get(key);
+    if (!d || d.expiresAtMs <= atMs) {
+      this.#devices.delete(key);
+      return { state: "expired" };
+    }
+    if (d.status === "approved") {
+      this.#devices.delete(key);
+      return { state: "approved", principalId: d.principalId as string, userCode: d.userCode, label: d.label };
+    }
+    if (d.status === "denied") {
+      this.#devices.delete(key);
+      return { state: "denied" };
+    }
+    const tooSoon = d.lastPollMs !== undefined && atMs - d.lastPollMs < minIntervalMs;
+    d.lastPollMs = atMs;
+    return { state: tooSoon ? "slow_down" : "pending" };
   }
 
   async ping(): Promise<void> {}

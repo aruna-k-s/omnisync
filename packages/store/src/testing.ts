@@ -1,6 +1,9 @@
 import type {
   AuditEvent,
   AuditInput,
+  DeviceAuth,
+  DeviceAuthInput,
+  DevicePoll,
   AuthorizeQuery,
   AuthorizeResult,
   CertificateRecord,
@@ -176,6 +179,22 @@ export class FaultyIdentityStore implements IdentityStore {
   async listCertificatesOf(principalId: string): Promise<CertificateRecord[]> {
     this.#gate();
     return this.inner.listCertificatesOf(principalId);
+  }
+  async createDeviceAuth(i: DeviceAuthInput, a: AuditInput): Promise<boolean> {
+    this.#gate();
+    return this.inner.createDeviceAuth(i, a);
+  }
+  async getDeviceAuth(userCode: string, atMs: number): Promise<DeviceAuth | undefined> {
+    this.#gate();
+    return this.inner.getDeviceAuth(userCode, atMs);
+  }
+  async decideDeviceAuth(userCode: string, d: "approve" | "deny", principalId: string, atMs: number, a: AuditInput): Promise<"ok" | "unknown" | "decided"> {
+    this.#gate();
+    return this.inner.decideDeviceAuth(userCode, d, principalId, atMs, a);
+  }
+  async pollDeviceAuth(h: Uint8Array, atMs: number, minIntervalMs: number): Promise<DevicePoll> {
+    this.#gate();
+    return this.inner.pollDeviceAuth(h, atMs, minIntervalMs);
   }
   async appendAudit(a: AuditInput): Promise<void> {
     this.#gate();

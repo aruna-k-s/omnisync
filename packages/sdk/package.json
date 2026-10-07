@@ -12,6 +12,10 @@
     "./session": {
       "types": "./dist/session.d.ts",
       "default": "./dist/session.js"
+    },
+    "./device-login": {
+      "types": "./dist/device-login.d.ts",
+      "default": "./dist/device-login.js"
     }
   },
   "files": [

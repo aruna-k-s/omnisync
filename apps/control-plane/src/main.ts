@@ -14,6 +14,9 @@ import type { LedgerAdminConfig } from "./config.js";
  *   OMNISYNC_ADMIN_EMAILS      comma separated
  *   DATABASE_URL               PostgreSQL; without it an in-memory store is used (dev only)
  *   OMNISYNC_RETURN_TO         comma separated URLs a single-page app may be sent back to after login (e.g. the console)
+ *   OMNISYNC_DEVICE_VERIFICATION_URL
+ *                              turns on device-code login (command line, build agents); the web page where a person approves
+ *                              a device. Must also be listed in OMNISYNC_RETURN_TO
  *   OMNISYNC_TENANT, OMNISYNC_LEDGER_PUBLIC_KEY (hex)
  *                              with DATABASE_URL: enable the admin API's ledger routes (trust keys and export)
  */
@@ -43,6 +46,7 @@ if (dbUrl) {
 }
 
 const clientSecret = process.env["OMNISYNC_OIDC_CLIENT_SECRET"];
+const deviceVerificationUrl = process.env["OMNISYNC_DEVICE_VERIFICATION_URL"];
 const app = await createControlPlane(
   {
     oidc: {
@@ -55,6 +59,7 @@ const app = await createControlPlane(
     sessionSecret: hexToBytes(need("OMNISYNC_SESSION_SECRET")),
     adminEmails: (process.env["OMNISYNC_ADMIN_EMAILS"] ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     returnTo: (process.env["OMNISYNC_RETURN_TO"] ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+    ...(deviceVerificationUrl ? { deviceLogin: { verificationUrl: deviceVerificationUrl } } : {}),
     ...(ledger ? { ledger } : {}),
   },
   { identity },

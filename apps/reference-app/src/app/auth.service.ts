@@ -1,7 +1,8 @@
 import { Injectable, signal } from "@angular/core";
-import { IndexedDbKeyVault, OmniSyncClient, createDeviceKey, enroll, loginUrl, returnToOf, sessionFromHash, type DeviceKey, type SyncDocument } from "@omnisync/sdk";
+import { DeviceLoginError, IndexedDbKeyVault, OmniSyncClient, createDeviceKey, decideDeviceRequest, describeDeviceRequest, enroll, loginUrl, returnToOf, sessionFromHash, type DeviceKey, type DeviceRequestInfo, type SyncDocument } from "@omnisync/sdk";
 import { parseConfig, type AppConfig } from "./config.js";
 import { reusableCertificate, storedCert } from "./cert-cache.js";
+import { deviceCodeFromSearch, removeDeviceParam } from "./device-code.js";
 import { Recent } from "./recent.js";
 
 export interface Me {
@@ -10,6 +11,7 @@ export interface Me {
   displayName: string;
 }
 
+const DEVICE_SLOT = "omnisync-reference-device";
 const hex = (b: Uint8Array): string => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 const toB64 = (b: Uint8Array): string => btoa(String.fromCharCode(...b));
 const fromB64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -36,6 +38,8 @@ export class AppSession {
   readonly keyExtractable = signal<boolean | undefined>(undefined);
   readonly warnings = signal<string[]>([]);
   readonly recent = new Recent(storage());
+  /** A device that asked, through `?device=`, to be signed in; kept across the sign-in redirect. */
+  readonly pendingDevice = signal<string | undefined>(undefined);
   #config!: AppConfig;
   #token: string | undefined;
   #key: DeviceKey | undefined;
@@ -50,6 +54,17 @@ export class AppSession {
       this.ready.set(true);
       return;
     }
+    const fromUrl = deviceCodeFromSearch(location.search);
+    if (fromUrl) {
+      // The code is not secret, but it should not stay in the address bar, and sign-in sends the browser away and back.
+      history.replaceState(null, "", location.pathname + removeDeviceParam(location.search) + location.hash);
+      try {
+        globalThis.sessionStorage.setItem(DEVICE_SLOT, fromUrl);
+      } catch {
+        // storage blocked: the code survives only if the person is already signed in
+      }
+    }
+    this.pendingDevice.set(fromUrl ?? this.#storedDevice());
     const token = sessionFromHash(location.hash);
     if (token) {
       // Out of the address bar and the history before anything else can read or copy it.
@@ -58,6 +73,42 @@ export class AppSession {
       await this.#setUp();
     }
     this.ready.set(true);
+  }
+
+  #storedDevice(): string | undefined {
+    try {
+      return deviceCodeFromSearch(`?device=${globalThis.sessionStorage.getItem(DEVICE_SLOT) ?? ""}`);
+    } catch {
+      return undefined;
+    }
+  }
+
+  clearDevice(): void {
+    this.pendingDevice.set(undefined);
+    try {
+      globalThis.sessionStorage.removeItem(DEVICE_SLOT);
+    } catch {
+      // nothing stored
+    }
+  }
+
+  /** A call to the device-login routes with this session; a 401 ends the session like any other call. */
+  async #deviceCall<T>(f: (cp: string, token: string) => Promise<T>): Promise<T> {
+    try {
+      return await f(this.#config.controlPlane, this.#token ?? "");
+    } catch (e) {
+      if (e instanceof DeviceLoginError && e.status === 401) {
+        await this.signOut("Your session ended. Sign in again.");
+        throw new Error("signed out", { cause: e });
+      }
+      throw e;
+    }
+  }
+  describeDevice(code: string): Promise<DeviceRequestInfo> {
+    return this.#deviceCall((cp, token) => describeDeviceRequest(cp, token, code));
+  }
+  decideDevice(code: string, decision: "approve" | "deny"): Promise<void> {
+    return this.#deviceCall((cp, token) => decideDeviceRequest(cp, token, code, decision));
   }
 
   signIn(): void {

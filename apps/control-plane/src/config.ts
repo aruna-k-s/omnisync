@@ -52,7 +52,15 @@ export interface ControlPlaneConfig {
   returnTo?: readonly string[];
   /** Enables the ledger routes of the admin API. */
   ledger?: LedgerAdminConfig;
+  /**
+   * Enables device-code login (docs/specs/device-login.md). `verificationUrl` is the page where a signed-in person
+   * approves a device; it must be one of `returnTo`. Without this the device routes answer 404.
+   */
+  deviceLogin?: { verificationUrl: string };
 }
+
+export const DEVICE_CODE_TTL_MS = 600_000;
+export const DEVICE_POLL_INTERVAL_MS = 5000;
 
 export const HOUR_MS = 3_600_000;
 
@@ -70,6 +78,7 @@ export interface ResolvedConfig {
   loginRateLimit: { burst: number; perMinute: number };
   returnTo: ReadonlySet<string>;
   ledger?: LedgerAdminConfig & { maxExportBytes: number };
+  deviceLogin?: { verificationUrl: string };
 }
 
 function checkReturnTo(raw: string): string {
@@ -89,6 +98,9 @@ function checkReturnTo(raw: string): string {
 
 export function resolveConfig(c: ControlPlaneConfig): ResolvedConfig {
   if (c.sessionSecret.length < 32) throw new Error("sessionSecret must be at least 32 bytes");
+  if (c.deviceLogin && !(c.returnTo ?? []).includes(c.deviceLogin.verificationUrl)) {
+    throw new Error("deviceLogin.verificationUrl must be one of returnTo (it is a page of a web app this control plane serves with CORS)");
+  }
   const certMaxLifetimeMs = c.certMaxLifetimeMs ?? 24 * HOUR_MS;
   const certDefaultLifetimeMs = Math.min(c.certDefaultLifetimeMs ?? 12 * HOUR_MS, certMaxLifetimeMs);
   return {
@@ -104,6 +116,7 @@ export function resolveConfig(c: ControlPlaneConfig): ResolvedConfig {
     trustProxy: c.trustProxy ?? false,
     loginRateLimit: c.loginRateLimit ?? { burst: 20, perMinute: 20 },
     returnTo: new Set((c.returnTo ?? []).map(checkReturnTo)),
+    ...(c.deviceLogin ? { deviceLogin: { verificationUrl: c.deviceLogin.verificationUrl } } : {}),
     ...(c.ledger ? { ledger: { ...c.ledger, maxExportBytes: c.ledger.maxExportBytes ?? DEFAULT_MAX_EXPORT_BYTES } } : {}),
   };
 }

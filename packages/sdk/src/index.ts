@@ -1,6 +1,7 @@
 export * from "./backoff.js";
 export * from "./batcher.js";
 export * from "./client.js";
+export * from "./device-login.js";
 export * from "./document.js";
 export * from "./enroll.js";
 export * from "./keys.js";

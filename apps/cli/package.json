@@ -1,0 +1,31 @@
+{
+  "name": "@omnisync/cli",
+  "version": "0.1.0",
+  "description": "Command-line client: sign in with a device code, hold a device key and certificate",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "omnisync-cli": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@omnisync/protocol": "workspace:*",
+    "@omnisync/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@omnisync/config": "workspace:*",
+    "@omnisync/control-plane": "workspace:*",
+    "@omnisync/crypto": "workspace:*",
+    "@omnisync/gateway": "workspace:*",
+    "@omnisync/reference-app": "workspace:*",
+    "@omnisync/store": "workspace:*",
+    "@omnisync/verifier": "workspace:*",
+    "playwright-core": "1.56.0"
+  }
+}

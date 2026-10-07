@@ -8,7 +8,7 @@ Non-goals: refresh tokens (the device renews by logging in again, or later by pr
 
 1. Device: `POST /v1/auth/device {label}` returns `{deviceCode, userCode, verificationUri, verificationUriComplete, expiresInS, intervalS}`.
 2. Device shows `userCode` and `verificationUri` and polls `POST /v1/auth/device/token {deviceCode}` every `intervalS`.
-3. Person opens `verificationUriComplete` (the reference app, or any app that implements the two calls below with the SDK), signs in as usual, sees **who is asking** (the label, the time, the code) and presses Approve or Deny: `GET /v1/auth/device/:userCode` (shows the request) then `POST /v1/auth/device/:userCode/approve` or `/deny`, both with the person's session bearer token.
+3. Person opens `verificationUriComplete` (the reference app, or any app that implements the two calls below with the SDK), signs in as usual, sees **who is asking** (the label, the time, the code) and presses Approve or Deny: `GET /v1/auth/device/:userCode` (shows the request) then `POST /v1/auth/device/:userCode/approve` or `/deny`, both with the person's session bearer token. The reference app does this on `/?device=<code>`: it keeps the code through the sign-in redirect (session storage, removed from the address bar), shows the label and the code to compare, and decides on a click.
 4. The next poll returns `{sessionToken}` once. The device creates an Ed25519 key, proves possession and enrols (`POST /v1/certificates`, unchanged), then **drops the session token**: the certificate is the credential.
 
 ## Endpoints
@@ -41,10 +41,10 @@ Non-goals: refresh tokens (the device renews by logging in again, or later by pr
 | Token request after expiry | `expired_token` |
 | Token returned | the row is deleted in the same transaction: a second poll is `expired_token` |
 | The approver's account is disabled between approval and the poll | the poll answers `access_denied`; no session is issued |
-| Many guesses of `userCode` | 20 lookups or approvals per IP per minute, then 429; guesses are not distinguishable from an unknown code (404) |
+| Many guesses of `userCode` | looking up or deciding is limited per signed-in person (the login rate limit, 20 a minute by default), then 429; a wrong code and a malformed one are both 404. Starting is limited per client IP like login; polling per IP at 60 burst, 120 a minute |
 | Store down | 503 `storage unavailable` |
 
-Every decision is audited: `device.start` (actor `system`, target the user code hash prefix, detail the label), `device.approve` and `device.deny` (actor the approver, target the same, detail the label), `device.token` (actor the principal). The audit target is the first 8 hex characters of the code's SHA-256, never the code.
+Every step is audited with the label as detail: `device.start` (actor `system`), `device.approve` and `device.deny` (actor the approver), `device.token` (actor the principal; written before the session is issued, so a failed audit write refuses the token with 503 and the request is already consumed). The audit target is `device:` plus the first 8 hex characters of the SHA-256 of the normalised user code, never the code itself.
 
 ## Storage
 
@@ -52,10 +52,10 @@ One table `device_auths` (migration `004_device_auth.sql`, additive): `device_ha
 
 ## SDK (browser and Node)
 
-`packages/sdk/src/session.ts` gains, as the subpath `@omnisync/sdk/session` already exports:
+`packages/sdk/src/device-login.ts`, exported from the SDK index and as the subpath `@omnisync/sdk/device-login` (only `fetch`, so it runs in Node and in browsers):
 
 - `startDeviceLogin(controlPlaneUrl, {label?, fetch?})` returns the response of step 1;
-- `pollDeviceLogin(controlPlaneUrl, start, {fetch?, sleep?, now?, signal?})` honours the interval and `slow_down`, stops at expiry and returns `{sessionToken}` or throws `DeviceLoginError` with `code` (`access_denied`, `expired_token`, `aborted`, `network`);
+- `pollDeviceLogin(controlPlaneUrl, start, {fetch?, sleep?, now?, signal?})` waits one interval before the first poll, honours the interval and `slow_down` (the larger of the server's interval and the old one plus five seconds), `retry-after` on 429, rides out up to four network or server failures in a row (the fifth ends it), stops at expiry and returns `{sessionToken}` or throws `DeviceLoginError` with `code` (`access_denied`, `expired_token`, `aborted`, `network`, `refused`, `unexpected`) and the HTTP `status` where there is one;
 - `describeDeviceRequest(cp, token, userCode)`, `decideDeviceRequest(cp, token, userCode, "approve" | "deny")` for the approving page.
 
 ## Command line (`apps/cli`, command `omnisync-cli`)

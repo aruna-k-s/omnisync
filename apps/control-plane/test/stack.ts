@@ -31,6 +31,8 @@ export interface StackOptions {
   /** URLs the web apps are served from. They become the control plane's `returnTo` (and so its CORS) and the gateway's allowed origins. */
   appUrls: readonly string[];
   adminEmails: readonly string[];
+  /** Turns on device-code login; must be one of `appUrls`. */
+  deviceVerificationUrl?: string;
 }
 
 export class Stack {
@@ -63,6 +65,7 @@ export class Stack {
         sessionSecret: new Uint8Array(32).fill(9),
         adminEmails: [...opts.adminEmails],
         returnTo: [...opts.appUrls],
+        ...(opts.deviceVerificationUrl ? { deviceLogin: { verificationUrl: opts.deviceVerificationUrl } } : {}),
         ledger: {
           tenant: "acme",
           issuers: [issuerKey.publicKey],

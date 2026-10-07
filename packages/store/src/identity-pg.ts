@@ -7,6 +7,9 @@ import type {
   AuthorizeQuery,
   AuthorizeResult,
   CertificateRecord,
+  DeviceAuth,
+  DeviceAuthInput,
+  DevicePoll,
   DocumentRecord,
   Grant,
   GrantGuard,
@@ -298,6 +301,63 @@ export class PgIdentityStore implements IdentityStore {
       [afterId, limit],
     );
     return r.rows.map((e) => ({ id: Number(e.id), atMs: Number(e.at), actor: e.actor, action: e.action, target: e.target, detail: e.detail }));
+  }
+
+  async createDeviceAuth(input: DeviceAuthInput, audit: AuditInput): Promise<boolean> {
+    return this.#tx(async (c) => {
+      // Expired rows that collide go first (they would otherwise block the code), then a bounded sweep of the rest.
+      await c.query("DELETE FROM device_auths WHERE expires_at <= $1 AND (device_hash = $2 OR user_code = $3)", [input.atMs, buf(input.deviceHash), input.userCode]);
+      await c.query("DELETE FROM device_auths WHERE device_hash IN (SELECT device_hash FROM device_auths WHERE expires_at <= $1 ORDER BY expires_at LIMIT 100)", [input.atMs]);
+      const r = await c.query(
+        "INSERT INTO device_auths (device_hash, user_code, label, created_at, expires_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+        [buf(input.deviceHash), input.userCode, input.label, input.atMs, input.expiresAtMs],
+      );
+      if (r.rowCount !== 1) return false;
+      await this.#audit(c, audit);
+      return true;
+    });
+  }
+
+  async getDeviceAuth(userCode: string, atMs: number): Promise<DeviceAuth | undefined> {
+    const r = await this.#query<{ user_code: string; label: string; created_at: string; expires_at: string; status: DeviceAuth["status"] }>(
+      "SELECT user_code, label, created_at, expires_at, status FROM device_auths WHERE user_code = $1 AND expires_at > $2",
+      [userCode, atMs],
+    );
+    const d = r.rows[0];
+    return d && { userCode: d.user_code, label: d.label, createdAtMs: Number(d.created_at), expiresAtMs: Number(d.expires_at), status: d.status };
+  }
+
+  async decideDeviceAuth(userCode: string, decision: "approve" | "deny", principalId: string, atMs: number, audit: AuditInput): Promise<"ok" | "unknown" | "decided"> {
+    return this.#tx(async (c) => {
+      const r = await c.query<{ status: string }>("SELECT status FROM device_auths WHERE user_code = $1 AND expires_at > $2 FOR UPDATE", [userCode, atMs]);
+      if (!r.rows[0]) return "unknown";
+      if (r.rows[0].status !== "pending") return "decided";
+      await c.query("UPDATE device_auths SET status = $2, principal_id = $3 WHERE user_code = $1", [userCode, decision === "approve" ? "approved" : "denied", decision === "approve" ? principalId : null]);
+      await this.#audit(c, audit);
+      return "ok";
+    });
+  }
+
+  async pollDeviceAuth(deviceHash: Uint8Array, atMs: number, minIntervalMs: number): Promise<DevicePoll> {
+    return this.#tx(async (c) => {
+      const r = await c.query<{ expires_at: string; status: string; principal_id: string | null; last_poll_at: string | null; user_code: string; label: string }>(
+        "SELECT expires_at, status, principal_id, last_poll_at, user_code, label FROM device_auths WHERE device_hash = $1 FOR UPDATE",
+        [buf(deviceHash)],
+      );
+      const d = r.rows[0];
+      if (!d) return { state: "expired" };
+      if (Number(d.expires_at) <= atMs) {
+        await c.query("DELETE FROM device_auths WHERE device_hash = $1", [buf(deviceHash)]);
+        return { state: "expired" };
+      }
+      if (d.status === "approved" || d.status === "denied") {
+        await c.query("DELETE FROM device_auths WHERE device_hash = $1", [buf(deviceHash)]);
+        return d.status === "approved" ? { state: "approved", principalId: d.principal_id as string, userCode: d.user_code, label: d.label } : { state: "denied" };
+      }
+      const tooSoon = d.last_poll_at !== null && atMs - Number(d.last_poll_at) < minIntervalMs;
+      await c.query("UPDATE device_auths SET last_poll_at = $2 WHERE device_hash = $1", [buf(deviceHash), atMs]);
+      return { state: tooSoon ? "slow_down" : "pending" };
+    });
   }
 
   async ping(): Promise<void> {

@@ -6,7 +6,7 @@ Shared instructions for every AI coding assistant working in this repo (Claude C
 
 OmniSync Enterprise: a self-hosted collaboration gateway for regulated companies. Every edit is a signed envelope, every accepted edit is verifiable, and AI agents edit only on shadow branches that a human merges. Product spec and build plan: the "OmniSync Enterprise - Final Product Specification and Build Plan (v4)" doc.
 
-Current phase: **Phase 1 - MVP, week 7 done (SDK and offline)**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 8 (console, CLI and native-app login handoff, which needs a control-plane device-code or loopback flow). Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7).
+Current phase: **Phase 1 - MVP, week 8 done (console, reference app, command-line login)**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 9 (agent SDK and shadow branches; see the plan). Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7), `docs/specs/admin-api.md`, `docs/specs/console.md`, `docs/specs/reference-app.md` and `docs/specs/device-login.md` (week 8).
 
 ## Commands
 
@@ -26,6 +26,10 @@ Current phase: **Phase 1 - MVP, week 7 done (SDK and offline)**. Phase 0 exit ga
 | Export the ledger | `DATABASE_URL=... OMNISYNC_TENANT=acme pnpm --filter @omnisync/gateway export ledger.ndjson` |
 | Verify an export (no database) | `node packages/verifier/dist/cli.js verify ledger.ndjson --issuer <hex> --ledger-key <hex> --tenant acme --locked dir` (exit 0 anchored, 1 violations, 2 bad input, 3 consistent but not anchored) |
 | Browser test (two real Chromium contexts) | `pnpm --filter @omnisync/sdk test` (needs Chromium: set `PLAYWRIGHT_BROWSERS_PATH`; without it the test is skipped unless `OMNISYNC_REQUIRE_BROWSER=1`, which CI sets) |
+| Build the web apps | `pnpm --filter @omnisync/console build` and `pnpm --filter @omnisync/reference-app build` (Angular 21; `ng build`, output in each app's `dist/`) |
+| Browser tests for the apps and the CLI | `pnpm --filter @omnisync/console test`, `... reference-app test`, `... cli test` (need Chromium via `PLAYWRIGHT_BROWSERS_PATH` and fresh builds of the apps and of `@omnisync/cli`; `OMNISYNC_REQUIRE_BROWSER=1` makes a missing browser or build fail instead of skip, CI sets it) |
+| Demo deployment (in memory, fake IdP) | `pnpm --filter @omnisync/reference-app demo` after building both apps; `/demo/as?u=alice|bob|carol|admin` picks who signs in next |
+| Command-line client | `node apps/cli/dist/main.js login --server <url>` (`whoami`, `logout`); state in `$OMNISYNC_HOME` or `~/.omnisync` |
 | Regenerate protocol vectors | `pnpm --filter @omnisync/protocol vectors` (wire-format break: bump `PROTOCOL_VERSION`) |
 
 Node 22.12+, pnpm 10.
@@ -34,7 +38,10 @@ Node 22.12+, pnpm 10.
 
 ```
 apps/gateway/        gateway (AUTH handshake, roles, revocation polling, rate limits, persist-before-ACK, group commit, snapshots, cold load, eviction, checkpoint writer, ledger export) + reconnecting Node client
-apps/control-plane/  NestJS 12 + Fastify: OIDC login (PKCE), session JWT, certificate issuance, grants, revocation, audit. Tests use a SWC plugin for decorators and a fake IdP (jose)
+apps/control-plane/  NestJS 12 + Fastify: OIDC login (PKCE; JSON or `return_to` redirect), device-code login, session JWT, certificate issuance, grants, revocation, audit, admin API (`/v1/admin/**`), CORS for the `returnTo` origins. Tests use a SWC plugin for decorators and a fake IdP (jose); `test/stack.ts` is the whole-stack harness the browser tests share
+apps/console/        Angular 21 admin console (people, documents, grants, audit, in-browser ledger verification). Admin API only, no state of its own
+apps/reference-app/  Angular 21 shared workbook on the SDK, the device-approval page, and `demo/serve.ts` (in-memory demonstration deployment)
+apps/cli/            `omnisync-cli`: device-code login, device key in a private file, `whoami`, `logout`
 packages/crypto/     Ed25519 session certificates, AUTH possession proof, enrollment proof, trust anchors, ledger entry hash, signed checkpoints
 packages/verifier/   offline ledger verifier and the `omnisync` command (Apache-2.0). Reads an export and public keys, never a database
 packages/protocol/   frames, varints, signed envelopes, keyring, test vectors (Apache-2.0)
@@ -48,7 +55,7 @@ docs/specs/          one spec per feature, written before code
 docs/decisions/      architecture decision records
 ```
 
-Planned (Phase 1): `apps/console`, `apps/reference-app`, `packages/agent-sdk`, `deploy/`.
+Planned (Phase 1): `packages/agent-sdk`, `deploy/`. `packages/sdk-react` is unused by the apps (the UI stack is Angular).
 
 ## Conventions
 
@@ -67,7 +74,8 @@ Changes here are never merged on AI review alone. Ask before editing, and the hu
 - `packages/protocol/src/signing.ts`, `packages/protocol/src/frame.ts`, `packages/protocol/test/vectors.json` (wire format is v2: frames carry sessionId, seq, claimedAtMs and a cert-bound signature)
 - `packages/crypto/**`, `packages/verifier/**`, any ledger code: `packages/store/src/ledger.ts`, `apps/gateway/src/{checkpoint,export}.ts`, migration `003`
 - Gateway authorization, handshake and replay checks in `apps/gateway/src/gateway.ts`
-- `apps/control-plane/src/{service,tokens,oidc,session}.ts`: login, certificate issuance and revocation
+- `apps/control-plane/src/{service,tokens,oidc,session,config,http,admin,device}.ts`: login (including the `return_to` redirect and the CORS hook in `app.ts`), device-code login, certificate issuance and revocation, admin authorization
+- `packages/store/src/identity*.ts` and migrations `002` and `004` (identity and device-code tables)
 - Durability logic in `apps/gateway/src/room.ts` (write path, snapshot cut, cold load)
 - `packages/store/migrations/**` and `packages/store/src/pg.ts`: the append-only log. Never edit an applied migration; add a new one
 
@@ -90,3 +98,8 @@ Changes here are never merged on AI review alone. Ask before editing, and the hu
 - Never let the device key's secret out: never export, serialise, log or send it, and never make the SDK's default path use an extractable key when WebCrypto can hold a non-extractable one.
 - Never delete a frame from the SDK outbox before the gateway acknowledged that exact frame (or answered duplicate or replay for it).
 - Never add a dependency without saying why in the pull request.
+- Never put a session token where a page or a terminal can leak it: not in a URL query, `localStorage`, a cookie, a log, a file or command output. The browser gets it once in the URL fragment and keeps it in memory; the CLI uses it once to enrol and drops it.
+- Never let a browser say "anchored" about a ledger it verified with keys from the same server (say "consistent"); only `omnisync verify` with out-of-band keys and locked checkpoints can.
+- Never write a device private key to disk except the CLI's private key file (0600, created exclusively, never overwritten, refused when readable by others); browsers keep a non-extractable key.
+- Never store a device code: only its SHA-256; never put a user code or device code in the audit trail or a log.
+- Never remove the login/lookup rate limits on the device routes, and never make a wrong user code distinguishable from an unknown one.

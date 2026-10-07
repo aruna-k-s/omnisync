@@ -2,7 +2,7 @@
 
 Self-hosted collaboration gateway for regulated teams: every edit is a signed envelope, and AI agents edit only on branches a human merges.
 
-**Status: Phase 1, week 7 (SDK and offline done).** What exists today:
+**Status: Phase 1, week 8 (console, reference app and command-line login done).** What exists today:
 
 | Package | What it does |
 | --- | --- |
@@ -14,7 +14,10 @@ Self-hosted collaboration gateway for regulated teams: every edit is a signed en
 | `packages/sdk-react` | React hooks over the SDK (`useDocument`, `useStatus`, `usePending`) |
 | `packages/store` | Append-only update log and identity store (principals, certificates, grants, audit) in PostgreSQL, snapshot metadata, object storage, migrations |
 | `apps/gateway` | WebSocket gateway: authenticates connections with certificates, enforces roles, verifies every update, commits it to the log before ACK, snapshots, cold-loads, evicts idle documents; reconnecting client |
-| `apps/control-plane` | NestJS service: OIDC login, certificate issuance, grants, revocation, audit log |
+| `apps/control-plane` | NestJS service: OIDC login (JSON or browser redirect), device-code login, certificate issuance, grants, revocation, audit log, admin API (people, documents, grants, audit, ledger trust keys and export) |
+| `apps/console` | Angular admin console: people and devices (one-click revoke), documents and grants, audit trail, in-browser ledger verification (labelled "consistent", never "anchored") |
+| `apps/reference-app` | Angular shared workbook (tables and text) on the SDK: sign-in, non-extractable device key, live editing, offline edits, read-only mode, and the page where a person approves a command-line sign-in. `pnpm --filter @omnisync/reference-app demo` runs a whole in-memory deployment to show it |
+| `apps/cli` | `omnisync-cli login / whoami / logout`: device-code sign-in for terminals and build agents; keeps a device key (private file) and certificate |
 | `bench` | Engine spike, signing cost and end-to-end latency, raw results as JSON |
 
 ## Quick start
@@ -25,9 +28,13 @@ pnpm install
 pnpm check               # lint, build, typecheck, test (Postgres suites need OMNISYNC_TEST_DATABASE_URL)
 pnpm --filter @omnisync/gateway dev    # two clients editing through the gateway
 pnpm bench               # writes bench/results/<timestamp>.json
+
+# a whole deployment in one process (in memory, fake IdP) to click through
+pnpm --filter @omnisync/console build && pnpm --filter @omnisync/reference-app build
+pnpm --filter @omnisync/reference-app demo     # prints the app and console URLs
 ```
 
-Gateway design: [docs/specs/gateway-core.md](docs/specs/gateway-core.md). Identity and certificates: [docs/specs/identity.md](docs/specs/identity.md). Ledger, checkpoints and the verifier: [docs/specs/ledger.md](docs/specs/ledger.md). Structured data in the engine: [docs/specs/engine-structured.md](docs/specs/engine-structured.md). SDK and offline mode: [docs/specs/sdk.md](docs/specs/sdk.md). Engine decision draft: [docs/decisions/0001-engine-choice.md](docs/decisions/0001-engine-choice.md). Specs live in `docs/specs/`. Working with AI assistants: [AGENTS.md](AGENTS.md).
+Gateway design: [docs/specs/gateway-core.md](docs/specs/gateway-core.md). Identity and certificates: [docs/specs/identity.md](docs/specs/identity.md). Ledger, checkpoints and the verifier: [docs/specs/ledger.md](docs/specs/ledger.md). Structured data in the engine: [docs/specs/engine-structured.md](docs/specs/engine-structured.md). SDK and offline mode: [docs/specs/sdk.md](docs/specs/sdk.md). Admin API and browser login: [docs/specs/admin-api.md](docs/specs/admin-api.md). Console: [docs/specs/console.md](docs/specs/console.md). Reference app: [docs/specs/reference-app.md](docs/specs/reference-app.md). Device-code login and the CLI: [docs/specs/device-login.md](docs/specs/device-login.md). Engine decision draft: [docs/decisions/0001-engine-choice.md](docs/decisions/0001-engine-choice.md). Specs live in `docs/specs/`. Working with AI assistants: [AGENTS.md](AGENTS.md).
 
 ## License
 

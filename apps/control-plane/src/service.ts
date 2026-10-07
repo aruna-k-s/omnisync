@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { Inject, Injectable } from "@nestjs/common";
 import { issueCertificate, verifyEnrollmentProof } from "@omnisync/crypto";
 import { bytesToHex, keyIdOf } from "@omnisync/protocol";
@@ -14,7 +14,7 @@ import {
 } from "@omnisync/store";
 import type { OidcIdentity } from "./oidc.js";
 import { CONFIG, IDENTITY } from "./tokens.js";
-import type { ResolvedConfig } from "./config.js";
+import { DEVICE_CODE_TTL_MS, DEVICE_POLL_INTERVAL_MS, type ResolvedConfig } from "./config.js";
 import { signSession } from "./session.js";
 
 export type ServiceErrorCode = "forbidden" | "not_found" | "bad_request" | "conflict";
@@ -174,12 +174,100 @@ export class IdentityService {
     if (!removed) throw new ServiceError("not_found", "no such grant");
   }
 
+  // ---- device-code login (docs/specs/device-login.md) ----
+
+  /** Starts a request for a device that has no browser. Nothing here proves who the device is; a person must approve it. */
+  async startDevice(rawLabel: unknown): Promise<DeviceStart> {
+    const label = typeof rawLabel === "string" ? rawLabel.replace(LABEL_STRIP, "").trim().slice(0, 64) : "";
+    const now = this.cfg.now();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const deviceCode = randomBytes(32).toString("base64url");
+      let userCode = "";
+      for (let i = 0; i < 8; i++) userCode += USER_CODE_ALPHABET[randomInt(USER_CODE_ALPHABET.length)];
+      const created = await this.store.createDeviceAuth(
+        { deviceHash: new Uint8Array(sha256(deviceCode)), userCode, label, atMs: now, expiresAtMs: now + DEVICE_CODE_TTL_MS },
+        this.#audit("system", "device.start", auditTarget(userCode), label),
+      );
+      if (created) return { deviceCode, userCode: formatUserCode(userCode), expiresInS: DEVICE_CODE_TTL_MS / 1000, intervalS: DEVICE_POLL_INTERVAL_MS / 1000 };
+    }
+    throw new ServiceError("conflict", "could not allocate a device code, try again");
+  }
+
+  async describeDevice(rawCode: string): Promise<{ label: string; createdAtMs: number; expiresAtMs: number; status: string }> {
+    const code = normaliseUserCode(rawCode);
+    const d = code === undefined ? undefined : await this.store.getDeviceAuth(code, this.cfg.now());
+    if (!d) throw new ServiceError("not_found", "no such request");
+    return { label: d.label, createdAtMs: d.createdAtMs, expiresAtMs: d.expiresAtMs, status: d.status };
+  }
+
+  async decideDevice(actor: Principal, rawCode: string, decision: "approve" | "deny"): Promise<void> {
+    const code = normaliseUserCode(rawCode);
+    if (code === undefined) throw new ServiceError("not_found", "no such request");
+    const d = await this.store.getDeviceAuth(code, this.cfg.now());
+    const outcome = d
+      ? await this.store.decideDeviceAuth(code, decision, actor.id, this.cfg.now(), this.#audit(actor.id, `device.${decision}`, auditTarget(code), d.label))
+      : "unknown";
+    if (outcome === "unknown") throw new ServiceError("not_found", "no such request");
+    if (outcome === "decided") throw new ServiceError("conflict", "this request was already decided");
+  }
+
+  /** The device's poll. A session is issued only for an approved request whose approver is still enabled, and only after the issue is audited. */
+  async pollDevice(rawDeviceCode: unknown): Promise<DevicePollResult> {
+    if (typeof rawDeviceCode !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(rawDeviceCode)) return { state: "expired_token" };
+    const r = await this.store.pollDeviceAuth(new Uint8Array(sha256(rawDeviceCode)), this.cfg.now(), DEVICE_POLL_INTERVAL_MS);
+    switch (r.state) {
+      case "pending":
+        return { state: "authorization_pending" };
+      case "slow_down":
+        return { state: "slow_down", intervalS: DEVICE_POLL_INTERVAL_MS / 1000 + 5 };
+      case "denied":
+        return { state: "access_denied" };
+      case "expired":
+        return { state: "expired_token" };
+      case "approved": {
+        const principal = await this.store.getPrincipal(r.principalId);
+        if (!principal || principal.disabledAtMs !== undefined) return { state: "access_denied" };
+        await this.store.appendAudit(this.#audit(principal.id, "device.token", auditTarget(r.userCode), r.label));
+        return { state: "approved", sessionToken: await signSession(this.cfg.sessionSecret, principal.id, this.cfg.now(), this.cfg.sessionTtlMs) };
+      }
+    }
+  }
+
   /** Records a ledger read before it happens; `appendAudit` failing means the read must not go ahead. */
   async auditLedgerExport(actor: Principal, tenant: string): Promise<void> {
     if (actor.orgRole !== "admin") throw new ServiceError("forbidden", "organisation admin only");
     await this.store.appendAudit(this.#audit(actor.id, "ledger.export", tenant));
   }
 }
+
+/** No vowels and no look-alikes: a code read aloud or typed from a terminal is hard to get wrong. */
+const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
+const USER_CODE = /^[BCDFGHJKLMNPQRSTVWXZ]{4}-?[BCDFGHJKLMNPQRSTVWXZ]{4}$/;
+/** Control characters and the invisible direction marks that could make one label read as another. */
+// eslint-disable-next-line no-control-regex -- removing control characters is the purpose
+const LABEL_STRIP = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+
+export type DevicePollResult =
+  | { readonly state: "approved"; readonly sessionToken: string }
+  | { readonly state: "authorization_pending" | "access_denied" | "expired_token" }
+  | { readonly state: "slow_down"; readonly intervalS: number };
+
+export interface DeviceStart {
+  readonly deviceCode: string;
+  readonly userCode: string;
+  readonly expiresInS: number;
+  readonly intervalS: number;
+}
+
+/** `ABCDEFGH` or `abcd-efgh` become `ABCDEFGH`; anything else is undefined. */
+export function normaliseUserCode(raw: string): string | undefined {
+  const up = raw.toUpperCase();
+  return USER_CODE.test(up) ? up.replace("-", "") : undefined;
+}
+export const formatUserCode = (c: string): string => `${c.slice(0, 4)}-${c.slice(4)}`;
+const sha256 = (s: string): Buffer => createHash("sha256").update(s).digest();
+/** What the audit trail says about a request: enough to match it to what the person saw, not enough to use it. */
+const auditTarget = (userCode: string): string => `device:${sha256(userCode).toString("hex").slice(0, 8)}`;
 
 function asConflict(e: unknown): unknown {
   return e instanceof LastAdminError ? new ServiceError("conflict", "a document needs at least one enabled admin") : e;

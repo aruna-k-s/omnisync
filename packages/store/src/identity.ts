@@ -81,6 +81,27 @@ export interface AuditEvent extends AuditInput {
   readonly detail: string;
 }
 
+/** A pending request to sign a device in (spec: docs/specs/device-login.md). Only the hash of the device code is ever stored. */
+export interface DeviceAuthInput {
+  /** SHA-256 of the secret device code, 32 bytes. */
+  readonly deviceHash: Uint8Array;
+  /** Normalised user code, eight letters. */
+  readonly userCode: string;
+  readonly label: string;
+  readonly atMs: number;
+  readonly expiresAtMs: number;
+}
+export interface DeviceAuth {
+  readonly userCode: string;
+  readonly label: string;
+  readonly createdAtMs: number;
+  readonly expiresAtMs: number;
+  readonly status: "pending" | "approved" | "denied";
+}
+export type DevicePoll =
+  | { readonly state: "pending" | "slow_down" | "denied" | "expired" }
+  | { readonly state: "approved"; readonly principalId: string; readonly userCode: string; readonly label: string };
+
 export interface AuthorizeQuery {
   readonly serial: Uint8Array;
   /** Certificate subject. Must match the principal recorded for the serial. */
@@ -144,6 +165,18 @@ export interface IdentityStore {
   appendAudit(audit: AuditInput): Promise<void>;
   /** Oldest first, ids greater than `afterId`. */
   listAudit(afterId: number, limit: number): Promise<AuditEvent[]>;
+
+  /** Stores a request with one audit event. False, changing nothing, if the user code or device hash is in use by an unexpired request. Expired colliding rows are removed first, and up to 100 other expired rows. */
+  createDeviceAuth(input: DeviceAuthInput, audit: AuditInput): Promise<boolean>;
+  /** The request for a user code, or undefined if unknown or expired (`expiresAtMs <= atMs`). */
+  getDeviceAuth(userCode: string, atMs: number): Promise<DeviceAuth | undefined>;
+  /** Records the first decision, with its audit event. `decided` if one was made already; `unknown` if there is no unexpired request (neither writes an audit event). */
+  decideDeviceAuth(userCode: string, decision: "approve" | "deny", principalId: string, atMs: number, audit: AuditInput): Promise<"ok" | "unknown" | "decided">;
+  /**
+   * The device's poll, atomic. Pending requests answer `slow_down` when the previous poll was less than `minIntervalMs` ago
+   * (the poll still counts); a decided request is handed over once and deleted; unknown, expired and consumed are all `expired`.
+   */
+  pollDeviceAuth(deviceHash: Uint8Array, atMs: number, minIntervalMs: number): Promise<DevicePoll>;
 
   ping(): Promise<void>;
   close(): Promise<void>;
