@@ -9,7 +9,7 @@
   "scripts": {
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
+    "test": "turbo run test --concurrency=4",
     "lint": "eslint .",
     "bench": "pnpm --filter @omnisync/bench run bench",
     "check": "pnpm lint && pnpm build && pnpm typecheck && pnpm test"

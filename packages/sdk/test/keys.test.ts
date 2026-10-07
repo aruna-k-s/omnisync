@@ -84,6 +84,21 @@ describe("device key", () => {
     expect(verifyDetached(await key.sign(msg), msg, key.publicKey)).toBe(true);
   });
 
+  it("refuses a vault that hands back an extractable key", async () => {
+    const vault = new MemoryKeyVault();
+    const pair = (await globalThis.crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    await vault.store({ privateKey: pair.privateKey, publicKey: new Uint8Array(await globalThis.crypto.subtle.exportKey("raw", pair.publicKey)) });
+    await expect(createDeviceKey({ vault })).rejects.toThrow(/extractable/);
+  });
+
+  it("does not trust a signer that returns the wrong number of bytes", async () => {
+    const vault = new MemoryKeyVault();
+    await createDeviceKey({ vault });
+    const lying = { subtle: { sign: () => Promise.resolve(new ArrayBuffer(10)) } } as unknown as Crypto;
+    const key = await createDeviceKey({ vault, webCrypto: lying });
+    await expect(key.sign(Uint8Array.of(1))).rejects.toThrow(/wrong length/);
+  });
+
   it("can refuse the fallback", async () => {
     await expect(createDeviceKey({ webCrypto: noEd25519, requireNonExtractable: true })).rejects.toBeInstanceOf(NonExtractableUnavailableError);
   });

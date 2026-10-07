@@ -161,7 +161,7 @@ describe("SDK documents against a real gateway", () => {
     const first = await world.start();
     const alice = await device("alice");
     const ob = new MemoryOutbox();
-    const c1 = connect(first.url, alice, ob);
+    const c1 = connect(first.url, alice, ob, { snapshotDelayMs: 600_000 }); // only the "first unconfirmed edit" path may save the copy
     const d1 = await c1.open("doc");
     await d1.online();
     d1.insertText(0, "base text;");
@@ -178,6 +178,65 @@ describe("SDK documents against a real gateway", () => {
     expect(d2.data).toEqual({ title: "Q3" });
     expect(d2.pending).toBe(1);
     expect(d2.status.state).toBe("idle");
+  });
+
+  it("an edit is stamped with the time it was made, not the time it was signed or sent", async () => {
+    const { url } = await world.start();
+    const alice = await device("alice");
+    let now = 1_000_000;
+    const ob = new MemoryOutbox();
+    const doc = await connect(url, alice, ob, { autoConnect: false, clock: () => now, batch: { minMs: 1000, maxMs: 2000 } }).open("doc");
+    doc.insertText(0, "a");
+    now = 1_000_400;
+    doc.insertText(1, "b");
+    now = 1_009_000; // the batch is signed long after
+    await doc.flush();
+    expect((await ob.pending()).map((f) => [f.claimedAtMs, decodeFrame(f.bytes).claimedAtMs])).toEqual([
+      [1_000_000, 1_000_000],
+      [1_000_400, 1_000_400],
+    ]);
+  });
+
+  it("refuses a certificate for a different device key and keeps the current one", async () => {
+    const { url } = await world.start();
+    const alice = await device("alice");
+    const mallory = await device("mallory");
+    const client = connect(url, alice, new MemoryOutbox());
+    const doc = await client.open("doc");
+    await doc.online();
+    expect(() => client.setCertificate(mallory.certificate)).toThrow(/different device key/);
+    doc.insertText(0, "still works");
+    await doc.synced();
+    expect(doc.status.state).toBe("online");
+  });
+
+  it("synced() sends what is waiting in the batching window instead of waiting for it", async () => {
+    const { url } = await world.start();
+    const doc = await connect(url, await device("alice"), new MemoryOutbox(), { batch: { minMs: 30_000, maxMs: 60_000 } }).open("doc");
+    await doc.online();
+    doc.insertText(0, "now");
+    const started = Date.now();
+    await doc.synced();
+    expect(Date.now() - started).toBeLessThan(3000);
+  }, 15_000);
+
+  it("a local copy never holds an edit the outbox does not (an edit still in the batching window is not in it)", async () => {
+    const { url } = await world.start();
+    const alice = await device("alice");
+    const bob = await device("bob");
+    const oa = new MemoryOutbox();
+    const a = await connect(url, alice, oa, { batch: { minMs: 60_000, maxMs: 60_000 }, snapshotDelayMs: 20 }).open("doc");
+    const b = await connect(url, bob, new MemoryOutbox()).open("doc");
+    await Promise.all([a.online(), b.online()]);
+    a.insertText(0, "QQ"); // made, not yet signed or stored
+    b.insertText(0, "remote");
+    await b.synced();
+    await until(() => a.text.includes("remote"), 5000, "relay");
+    await sleep(150); // the copy would be taken now if it were allowed to
+    // "crash": no close, no flush. A new page opens from what the storage holds.
+    const after = await connect(url, alice, oa, { autoConnect: false }).open("doc");
+    expect(after.text).not.toContain("QQ");
+    expect(after.pending).toBe(0);
   });
 
   it("frames the gateway already stored are answered as duplicates and cleared", async () => {

@@ -6,7 +6,7 @@ Shared instructions for every AI coding assistant working in this repo (Claude C
 
 OmniSync Enterprise: a self-hosted collaboration gateway for regulated companies. Every edit is a signed envelope, every accepted edit is verifiable, and AI agents edit only on shadow branches that a human merges. Product spec and build plan: the "OmniSync Enterprise - Final Product Specification and Build Plan (v4)" doc.
 
-Current phase: **Phase 1 - MVP, week 6 done (ledger)**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 7 (SDK and offline; engine interface extended for maps and arrays; decisions D6, D7 first). Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6).
+Current phase: **Phase 1 - MVP, week 7 done (SDK and offline)**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 8 (console, CLI and native-app login handoff, which needs a control-plane device-code or loopback flow). Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7).
 
 ## Commands
 
@@ -25,6 +25,7 @@ Current phase: **Phase 1 - MVP, week 6 done (ledger)**. Phase 0 exit gate (desig
 | Run gateway / control plane | `pnpm --filter @omnisync/gateway serve` / `pnpm --filter @omnisync/control-plane start` (config via env, see `apps/control-plane/src/config.ts`) |
 | Export the ledger | `DATABASE_URL=... OMNISYNC_TENANT=acme pnpm --filter @omnisync/gateway export ledger.ndjson` |
 | Verify an export (no database) | `node packages/verifier/dist/cli.js verify ledger.ndjson --issuer <hex> --ledger-key <hex> --tenant acme --locked dir` (exit 0 anchored, 1 violations, 2 bad input, 3 consistent but not anchored) |
+| Browser test (two real Chromium contexts) | `pnpm --filter @omnisync/sdk test` (needs Chromium: set `PLAYWRIGHT_BROWSERS_PATH`; without it the test is skipped unless `OMNISYNC_REQUIRE_BROWSER=1`, which CI sets) |
 | Regenerate protocol vectors | `pnpm --filter @omnisync/protocol vectors` (wire-format break: bump `PROTOCOL_VERSION`) |
 
 Node 22.12+, pnpm 10.
@@ -37,15 +38,17 @@ apps/control-plane/  NestJS 12 + Fastify: OIDC login (PKCE), session JWT, certif
 packages/crypto/     Ed25519 session certificates, AUTH possession proof, enrollment proof, trust anchors, ledger entry hash, signed checkpoints
 packages/verifier/   offline ledger verifier and the `omnisync` command (Apache-2.0). Reads an export and public keys, never a database
 packages/protocol/   frames, varints, signed envelopes, keyring, test vectors (Apache-2.0)
-packages/engine/     engine interface + Yjs, Automerge, Loro adapters
+packages/engine/     engine interface (text + JSON tree of maps and arrays) + Yjs, Automerge, Loro adapters. `@omnisync/engine/yjs` is a subpath so a browser bundle can omit the other two
 packages/store/      hash-chained update log, checkpoints, identity store (principals, certificates with their signed bytes, grants, document registry, audit), snapshot metadata (PostgreSQL + in-memory), object storage (filesystem + memory), SQL migrations, fault injection (`@omnisync/store/testing`)
+packages/sdk/        browser and Node SDK (Apache-2.0): device key (WebCrypto, non-extractable), outbox (memory, IndexedDB), batching, SyncDocument, enrollment. Test page and Playwright test under browser/ and test/browser.test.ts
+packages/sdk-react/  React hooks only (peer: React 18 or 19)
 packages/config/     shared tsconfig
 bench/               benchmark harness; raw results in bench/results/
 docs/specs/          one spec per feature, written before code
 docs/decisions/      architecture decision records
 ```
 
-Planned (Phase 1): `apps/console`, `apps/reference-app`, `packages/sdk`, `packages/sdk-react`, `packages/agent-sdk`, `deploy/`.
+Planned (Phase 1): `apps/console`, `apps/reference-app`, `packages/agent-sdk`, `deploy/`.
 
 ## Conventions
 
@@ -54,7 +57,8 @@ Planned (Phase 1): `apps/console`, `apps/reference-app`, `packages/sdk`, `packag
 - Invariants are property-based tests with fast-check: convergence, envelope round-trips, tamper detection, replay rejection.
 - Diffs under about 300 lines, one pull request each. CI must be green.
 - Hostile input never throws past a boundary: decoders return typed errors, the gateway counts and drops.
-- Updates and state vectors are opaque bytes above `packages/engine`. Nothing else imports `yjs`, `@automerge/automerge` or `loro-crdt` directly, except the gateway's Node test client via the engine package.
+- Updates and state vectors are opaque bytes above `packages/engine`. Nothing else imports `yjs`, `@automerge/automerge` or `loro-crdt` directly; the gateway's Node client and the SDK go through `@omnisync/engine`.
+- The SDK is browser-first: no `node:*` imports, no `ws`, signing is asynchronous. The device key signs through a callback so a non-extractable WebCrypto key works.
 
 ## Protected paths
 
@@ -83,4 +87,6 @@ Changes here are never merged on AI review alone. Ask before editing, and the hu
 - Never update or delete rows in `document_updates` (a trigger enforces it); snapshots are a cache, the log is the truth.
 - Never edit an already-applied SQL migration.
 - Never change `vectors.json` without bumping the protocol version.
+- Never let the device key's secret out: never export, serialise, log or send it, and never make the SDK's default path use an extractable key when WebCrypto can hold a non-extractable one.
+- Never delete a frame from the SDK outbox before the gateway acknowledged that exact frame (or answered duplicate or replay for it).
 - Never add a dependency without saying why in the pull request.

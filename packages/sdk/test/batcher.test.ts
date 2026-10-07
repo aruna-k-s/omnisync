@@ -57,6 +57,17 @@ describe("batching windows", () => {
     expect(flushes.flatMap((f) => f.items)).toEqual(Array.from({ length: 30 }, (_, i) => i * 20));
   });
 
+  it("a late clock does not break the windows: nearby edits still share a flush", async () => {
+    vi.setSystemTime(1_700_000_000_000);
+    const { b, flushes } = make();
+    for (let i = 0; i < 5; i++) {
+      b.add(i);
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    await vi.advanceTimersByTimeAsync(100);
+    expect(flushes.map((f) => f.items)).toEqual([[0, 1, 2, 3, 4]]);
+  });
+
   it("flush() forces it and an empty flush does nothing", async () => {
     const { b, flushes } = make();
     await b.flush();

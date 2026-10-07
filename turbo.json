@@ -20,7 +20,9 @@
       ],
       "env": [
         "OMNISYNC_TEST_DATABASE_URL",
-        "STORM_CLIENTS"
+        "STORM_CLIENTS",
+        "PLAYWRIGHT_BROWSERS_PATH",
+        "OMNISYNC_REQUIRE_BROWSER"
       ]
     }
   },

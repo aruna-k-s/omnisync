@@ -1,4 +1,4 @@
-import { issueCertificate, signerFromKeyPair, decodeCertificate, verifyEnrollmentProof } from "@omnisync/crypto";
+import { issueCertificate, signerFromKeyPair, verifyEnrollmentProof } from "@omnisync/crypto";
 import { yjsEngine } from "@omnisync/engine/yjs";
 import { Gateway } from "@omnisync/gateway";
 import { generateKeyPair, signUpdateWith } from "@omnisync/protocol";
@@ -125,7 +125,6 @@ export function fakeControlPlane(world: World, principalId: string, opts: { call
       const lifetime = body.lifetimeMs ?? 3_600_000;
       const serial = globalThis.crypto.getRandomValues(new Uint8Array(16));
       const certificate = issueCertificate({ subject: principalId, subjectPublicKey: publicKey, issuedAtMs: now, notAfterMs: now + lifetime, serial }, signerFromKeyPair(issuerKey));
-      const cert = decodeCertificate(certificate);
       if (opts.record !== false) await world.identity.recordCertificate(
         { serial, principalId, keyId: keyIdFor(publicKey), publicKey, issuedAtMs: now, notBeforeMs: now, notAfterMs: now + lifetime, certificate },
         { atMs: now, actor: "system", action: "cert.issue", target: principalId },

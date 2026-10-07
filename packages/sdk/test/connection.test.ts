@@ -67,8 +67,8 @@ const EMPTY = (() => {
   return snap;
 })();
 
-const remoteText = (text: string) => {
-  const d = yjsEngine.create(4242);
+const remoteText = (text: string, actor = 4242) => {
+  const d = yjsEngine.create(actor);
   const u = d.insertText(0, text);
   d.destroy();
   return u;
@@ -139,12 +139,16 @@ describe("connection behaviour against a scripted gateway", () => {
     const other = await createDeviceKey();
     const early = (await craftFrame(other, "doc", 9, 1, Date.now(), "early")).bytes;
     const nor = (await craftFrame(other, "doc", 9, 2, Date.now(), "nor this")).bytes;
-    s.onConnect = (ws) => ws.send(early);
+    s.onConnect = (ws) => {
+      ws.send(early);
+      s.send(ws, FrameType.SYNC_2, { payload: remoteText("sneaky", 5151) }); // a SYNC_2 nobody asked for, before the handshake
+    };
     s.onFrame = (ws, f) => f.type === FrameType.SYNC_1 && s.send(ws, FrameType.SYNC_2, { payload: remoteText("ok") });
     const { doc } = await open(s);
     await doc.online();
     expect(doc.text).toBe("ok");
     expect(doc.text).not.toContain("early");
+    expect(doc.text).not.toContain("sneaky");
 
     // Upload-only: the gateway says "mode 1": the SDK drains its outbox and reads nothing.
     s.authResult = [1, 1];
@@ -218,6 +222,116 @@ describe("connection behaviour against a scripted gateway", () => {
     const n = s.connections;
     await sleep(300);
     expect(s.connections).toBe(n);
+  });
+
+  it("sends one session's frames at a time, each exactly once, and the next session only after the first is acknowledged", async () => {
+    const s = await setup();
+    const ob = new MemoryOutbox();
+    await ob.append([await craftFrame(key, "doc", 11, 1, Date.now(), "a"), await craftFrame(key, "doc", 11, 2, Date.now(), "b")]);
+    await ob.append([await craftFrame(key, "doc", 22, 1, Date.now(), "c")]);
+    const seen: string[] = [];
+    const sockets: { ws: ServerSocket; f: Frame }[] = [];
+    s.onFrame = (ws, f) => {
+      if (f.type === FrameType.SYNC_1) s.send(ws, FrameType.SYNC_2);
+      if (f.type === FrameType.UPDATE) {
+        seen.push(`${f.sessionId}:${f.seq}`);
+        sockets.push({ ws, f });
+      }
+    };
+    const { doc } = await open(s, {}, ob);
+    await until(() => seen.length >= 2, 3000, "first session sent");
+    const ack = (id: string) => {
+      const x = sockets.find((q) => `${q.f.sessionId}:${q.f.seq}` === id)!;
+      s.send(x.ws, FrameType.ACK, { sessionId: x.f.sessionId, seq: x.f.seq });
+    };
+    ack("11:1"); // a reason for the client to look at its queue again
+    await sleep(150);
+    expect(seen).toEqual(["11:1", "11:2"]); // no duplicates, and nothing from session 22 yet
+    ack("11:2");
+    await until(() => seen.includes("22:1"), 3000, "second session sent");
+    expect(seen).toEqual(["11:1", "11:2", "22:1"]);
+    ack("22:1");
+    await doc.synced();
+  });
+
+  it("synced() resolves only when every edit is acknowledged, and a repeated ACK clears nothing else", async () => {
+    const s = await setup();
+    const ob = new MemoryOutbox();
+    await ob.append([await craftFrame(key, "doc", 11, 1, Date.now(), "a"), await craftFrame(key, "doc", 11, 2, Date.now(), "b")]);
+    const held: { ws: ServerSocket; f: Frame }[] = [];
+    s.onFrame = (ws, f) => {
+      if (f.type === FrameType.SYNC_1) s.send(ws, FrameType.SYNC_2);
+      if (f.type === FrameType.UPDATE) held.push({ ws, f });
+    };
+    const { doc } = await open(s, {}, ob);
+    let done = false;
+    const waiting = doc.synced().then(() => (done = true));
+    await until(() => held.length === 2, 3000, "both sent");
+    const [one, two] = held as [(typeof held)[0], (typeof held)[0]];
+    s.send(one.ws, FrameType.ACK, { sessionId: 11, seq: 1 });
+    s.send(one.ws, FrameType.ACK, { sessionId: 11, seq: 1 }); // the same ACK again
+    await sleep(150);
+    expect(done).toBe(false);
+    expect(doc.pending).toBe(1);
+    expect((await ob.pending()).map((f) => f.seq)).toEqual([2]);
+    s.send(two.ws, FrameType.ACK, { sessionId: 11, seq: 2 });
+    await waiting;
+    expect(doc.pending).toBe(0);
+  });
+
+  it("a replay answer means the frame is already stored: delivered, not refused", async () => {
+    const s = await setup();
+    s.onFrame = (ws, f) => {
+      if (f.type === FrameType.SYNC_1) s.send(ws, FrameType.SYNC_2);
+      if (f.type === FrameType.UPDATE) s.err(ws, "replay", f.seq);
+    };
+    const { doc } = await open(s);
+    await doc.online();
+    doc.insertText(0, "x");
+    await doc.synced();
+    expect(doc.pending).toBe(0);
+    expect(doc.refusedEdits).toBe(0);
+  });
+
+  it("close code 4401 is permanent; with a transient reason it is retried", async () => {
+    const s = await setup();
+    s.onFrame = (ws, f) => f.type === FrameType.SYNC_1 && s.send(ws, FrameType.SYNC_2);
+    const { doc } = await open(s);
+    await doc.online();
+    s.sockets[0]!.close(4401, "timeout");
+    await until(() => s.connections >= 2, 3000, "retry after a transient 4401");
+    expect(doc.status.state).not.toBe("closed");
+    await doc.online();
+    s.sockets.at(-1)!.close(4401, "expired");
+    await until(() => doc.status.state === "closed", 3000, "closed");
+    expect(doc.status.reason).toBe("expired");
+  });
+
+  it("a busy answer raises the wait before the next reconnect", async () => {
+    const s = await setup();
+    s.onFrame = (ws, f) => {
+      if (f.type !== FrameType.SYNC_1) return;
+      s.err(ws, "busy;retry_after_ms=400");
+      setTimeout(() => ws.close(1001, "bye"), 10);
+    };
+    const { doc } = await open(s, { random: () => 0 });
+    await until(() => doc.delays.length >= 1, 3000, "a reconnect was scheduled");
+    expect(doc.delays[0]).toBeGreaterThanOrEqual(400);
+  });
+
+  it("a renewed certificate replaces the connection and is used for the handshake", async () => {
+    const s = await setup();
+    s.onFrame = (ws, f) => f.type === FrameType.SYNC_1 && s.send(ws, FrameType.SYNC_2);
+    const c = new OmniSyncClient({ url: s.url, key, certificate, outbox: () => new MemoryOutbox(), tuning: { batch: { minMs: 2, maxMs: 10 }, backoff: { baseMs: 20, maxMs: 100 }, syncTimeoutMs: 1000 } });
+    clients.push(c);
+    const doc = await c.open("doc");
+    await doc.online();
+    const { certificate: fresh } = await world.enroll(await world.person("sam2"), key, { doc: "write" });
+    c.setCertificate(fresh);
+    await until(() => s.connections === 2 && doc.status.state === "online", 3000, "second connection");
+    expect(s.count(FrameType.AUTH_RESPONSE)).toBe(2);
+    const last = s.received.filter((r) => r.frame.type === FrameType.AUTH_RESPONSE).at(-1)!.frame.payload;
+    expect(Buffer.from(last).includes(Buffer.from(fresh))).toBe(true);
   });
 
   it("a retryable handshake refusal keeps trying", async () => {

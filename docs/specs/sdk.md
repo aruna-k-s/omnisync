@@ -1,6 +1,6 @@
 # Spec: the TypeScript SDK (Phase 1, week 7b to 7d)
 
-Status: written before code. Decisions D6 (browser key storage) and D7 (structured data) accepted as recommended.
+Status: built (week 7). Decisions D6 (browser key storage) and D7 (structured data) accepted as recommended. Sections marked *added in build* record what the build taught us beyond the first draft.
 Protected paths touched, all additive and with no wire or certificate format change: `packages/protocol/src/signing.ts` (an async signing variant of `signUpdate`), `packages/crypto/src/auth.ts` (async variants of the AUTH response and the enrollment proof). Frozen vectors must still pass unchanged.
 
 ## Purpose
@@ -57,6 +57,10 @@ Session numbering: a session id is chosen once per page load, unique per device 
 
 Idempotency: the gateway already answers a repeated `(key, session, clientSeq)` that it stored with "duplicate" and ACKs it, and rejects one that is older than the newest stored for that session as a replay. The SDK treats an ACK or a duplicate answer as success, and a replay rejection of a frame it still holds as success too, because the frame can only be refused as a replay if a newer one from the same session was stored, which means this one was.
 
+Replay order across page loads (*added in build*): frames of one session are sent together; frames of a later session wait until the earlier session's frames are acknowledged. The gateway's `ERROR` frame carries only a `seq`, so two frames with the same seq in flight at once would be ambiguous.
+
+Local copy (*added in build*): the outbox also keeps one snapshot of the document, taken when nothing is waiting for the gateway (after the sync, and at the moment a quiet document gets its first unconfirmed edit, and when it has been quiet for a second). On reopen the document starts from that copy and replays the pending frames, so a reload while offline shows the document instead of an empty page. A copy never contains an edit the outbox does not.
+
 ### 4. Batching
 
 Local edits apply to the in-memory document at once (the UI never waits). Signing, the outbox write and the send happen once per window: the first edit starts a timer of `batchMinMs` (default 50), further edits within the window join the same flush, and a flush never waits longer than `batchMaxMs` (default 250) from the first unflushed edit. One flush is one outbox transaction and one burst of frames, in edit order. `claimedAtMs` is the time of the edit, captured when it is made, not when it is signed. `flush()` forces it; the SDK flushes on `pagehide` and `visibilitychange` to hidden.
@@ -71,16 +75,26 @@ Reconnect: exponential backoff with full jitter (`baseMs` 250, `maxMs` 30,000), 
 
 The SDK never applies an update it cannot account for: remote updates are applied to the engine and relayed to listeners only after the gateway sent them over the authenticated connection.
 
+Details settled in the build:
+
+- One deadline (`syncTimeoutMs`, default 5 s) covers the connection attempt and the handshake.
+- Close codes 4401 and 4403 are permanent unless the reason says the failure is transient (`unavailable`, `timeout`). A handshake `auth_failed;<reason>` with any other reason is permanent too.
+- `disconnect()` works offline on purpose and does not retry until `connect()`.
+- `setCertificate(bytes)` swaps in a renewed certificate for the same device key, reconnects, and sends the queue under it. The SDK stops connecting when the certificate is more than `certificateGraceMs` (72 h) past its end; the gateway's own grace decides upload-only within that.
+- A browser sends an `Origin` header, and the gateway refuses origins it was not told about (`allowedOrigins` / `OMNISYNC_ALLOWED_ORIGINS`). Deploying the SDK in a web app means listing the app's origin there.
+- Roles on the wire are `read, write, merge, admin`.
+
 ### 6. Document API
 
 ```ts
 const doc = await client.open("doc-id");    // engine "yjs" by default
 doc.text; doc.insertText(0, "hi"); doc.deleteText(0, 2);
 doc.data; doc.mapSet([], "title", "Q3"); doc.arrayInsert(["rows"], 0, [{...}]);
-doc.onChange(fn); doc.status; doc.pending; await doc.synced(); doc.close();
+doc.onChange(fn); doc.onStatus(fn); doc.onPending(fn); doc.status; doc.pending;
+await doc.online(); await doc.synced(); doc.disconnect(); doc.connect(); doc.close();
 ```
 
-Edits return when applied locally (synchronous for the UI); `doc.synced()` resolves when the outbox is empty and the gateway has ACKed everything made so far. Validation errors from the engine (bad path, non-JSON value) throw from the edit call and sign nothing.
+`open` resolves as soon as the local replica is ready: it never waits for the network. Edits return when applied locally (synchronous for the UI); `doc.synced()` resolves when the outbox is empty and the gateway has ACKed everything made so far. Validation errors from the engine (bad path, non-JSON value) throw from the edit call and sign nothing.
 
 ### 7. React (`@omnisync/sdk-react`)
 
@@ -104,10 +118,10 @@ Edits return when applied locally (synchronous for the UI); `doc.synced()` resol
 | Certificate expired and grace over | Status `closed (certificate expired)`; outbox kept for a new certificate from the same key |
 | Certificate revoked | Status `closed (revoked)`; outbox kept but never sent with that certificate |
 | Gateway restarts mid-batch | Unacked frames replay; stored ones answer duplicate and are cleared |
-| Outbox storage full or blocked | `status: "error"`, edit call rejects, document unchanged (the edit is rolled back from the engine only if the engine supports it; otherwise the SDK marks the document `dirty` and refuses further edits until reload) |
+| Outbox storage full or blocked, or signing fails | The edit has already been applied locally and the engine cannot roll it back, so the document goes to `state: "error"`, refuses further edits (`DocumentFaultError`), rejects `synced()`, and must be reopened; the edits already in the outbox are intact |
 | IndexedDB unavailable (private window) | `MemoryOutbox` with a visible warning: edits survive a reconnect but not a reload |
 | WebCrypto Ed25519 missing | Noble fallback, `extractable: true`, reported |
-| Page reload with pending edits | Frames reload from the outbox and replay; the in-memory document is rebuilt by SYNC_2 from the gateway plus a local replay of pending frames' updates |
+| Page reload with pending edits | The document starts from the local copy, the pending frames are replayed into it, and the frames go to the gateway under the old session ids first. SYNC_2 then brings whatever others did |
 
 ## Tests (written first)
 

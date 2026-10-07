@@ -9,6 +9,8 @@ import { decodeFrame } from "@omnisync/protocol";
 import { World, fakeControlPlane, sleep, until } from "./harness.js";
 
 const haveChromium = existsSync(chromium.executablePath());
+// CI sets OMNISYNC_REQUIRE_BROWSER=1 so a missing Chromium fails loudly instead of skipping the exit-criterion test.
+if (!haveChromium && process.env["OMNISYNC_REQUIRE_BROWSER"] === "1") throw new Error("Chromium not found but OMNISYNC_REQUIRE_BROWSER=1");
 
 /** A TCP relay in front of the gateway that can cut the network and bring it back: a deterministic "offline". */
 class Partition {

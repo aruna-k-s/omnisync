@@ -65,6 +65,13 @@ export class DocumentFaultError extends Error {
   }
 }
 
+/** The bytes of a binary WebSocket message, whichever JavaScript realm made the buffer (a test page, an iframe). */
+function binaryOf(data: unknown): Uint8Array | undefined {
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  if (Object.prototype.toString.call(data) === "[object ArrayBuffer]") return new Uint8Array(data as ArrayBuffer);
+  return undefined;
+}
+
 function errorOf(e: unknown): Error {
   return e instanceof Error ? e : new Error(String(e));
 }
@@ -93,6 +100,7 @@ export class SyncDocument {
   readonly #changeFns = new Set<(source: ChangeSource) => void>();
   readonly #statusFns = new Set<(s: Status) => void>();
   readonly #errorFns = new Set<(message: string) => void>();
+  readonly #pendingFns = new Set<(pending: number) => void>();
   #cert: Uint8Array | undefined;
   #sessionId = 0;
   #seq = 0;
@@ -202,6 +210,11 @@ export class SyncDocument {
     this.#statusFns.add(fn);
     return () => this.#statusFns.delete(fn);
   }
+  /** Fires whenever the count of unconfirmed edits changes. */
+  onPending(fn: (pending: number) => void): () => void {
+    this.#pendingFns.add(fn);
+    return () => this.#pendingFns.delete(fn);
+  }
   /** Errors the gateway reported, as `code;hint` strings. */
   onError(fn: (message: string) => void): () => void {
     this.#errorFns.add(fn);
@@ -258,7 +271,7 @@ export class SyncDocument {
     if (this.#pending === 0 && this.#dirty) void this.#saveSnapshot();
     const payload = make(this.#engineDoc);
     this.#dirty = true;
-    this.#pending++;
+    this.#bump(1);
     this.#batcher.add({ payload, claimedAtMs });
     this.#emitChange("local");
   }
@@ -286,7 +299,7 @@ export class SyncDocument {
   /** Signing or storage failed after the edits were applied locally: the replica no longer matches the outbox. */
   #failCommit(e: Error, count: number): void {
     this.#fault = e.message;
-    this.#pending -= count;
+    this.#bump(-count);
     this.#setStatus({ state: "error", mode: this.#status.mode, reason: e.message });
     this.#teardownSocket();
     const err = new DocumentFaultError(e.message);
@@ -334,8 +347,9 @@ export class SyncDocument {
       else this.#setStatus({ state: "authenticating", mode: "full" });
     });
     ws.addEventListener("message", (ev: MessageEvent) => {
-      if (this.#ws !== ws || !(ev.data instanceof ArrayBuffer)) return;
-      void this.#onMessage(ws, new Uint8Array(ev.data)).catch((e: unknown) => this.errors.push(`handler: ${errorOf(e).message}`));
+      const bytes = binaryOf(ev.data);
+      if (this.#ws !== ws || !bytes) return;
+      void this.#onMessage(ws, bytes).catch((e: unknown) => this.errors.push(`handler: ${errorOf(e).message}`));
     });
     ws.addEventListener("error", () => {}); // 'close' always follows
     ws.addEventListener("close", (ev: CloseEvent) => {
@@ -526,7 +540,7 @@ export class SyncDocument {
     if (i < 0) return; // a duplicate answer to a frame already cleared
     this.#queue.splice(i, 1);
     this.#sent.delete(`${sessionId}:${seq}`);
-    this.#pending--;
+    this.#bump(-1);
     try {
       await this.#o.outbox.ack(sessionId, seq);
     } catch (e) {
@@ -614,6 +628,11 @@ export class SyncDocument {
     if (this.#pending > 0) return;
     this.#scheduleSnapshot();
     for (const w of this.#drain.splice(0)) w.resolve();
+  }
+
+  #bump(n: number): void {
+    this.#pending += n;
+    for (const fn of this.#pendingFns) fn(this.#pending);
   }
 
   #setStatus(s: Status): void {

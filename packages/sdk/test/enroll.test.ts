@@ -45,12 +45,13 @@ describe("enrollment", () => {
 
   it("reports a refusal with its status and reason, and never sends the secret", async () => {
     const key = await createDeviceKey();
-    await expect(enroll({ controlPlaneUrl: "https://x", sessionToken: "stale", principalId: "p1", deviceKey: key, fetch: fakeControlPlane(world, "p1", { record: false }) })).rejects.toMatchObject({ name: "EnrollmentError", status: 401 });
+    await expect(enroll({ controlPlaneUrl: "https://x", sessionToken: "stale", principalId: "p1", deviceKey: key, fetch: fakeControlPlane(world, "p1", { record: false }) })).rejects.toMatchObject({ name: "EnrollmentError", status: 401, message: expect.stringMatching(/refused \(401\)/) });
 
     // A proof for another principal is refused by the verifier, which the double mirrors.
     const err = await enroll({ controlPlaneUrl: "https://x", sessionToken: "good-session", principalId: "someone-else", deviceKey: key, fetch: fakeControlPlane(world, "p1", { record: false }) }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(EnrollmentError);
     expect((err as EnrollmentError).status).toBe(400);
+    expect((err as EnrollmentError).message).toMatch(/refused \(400\): proof of key possession is invalid/);
 
     let sent = "";
     await enroll({
