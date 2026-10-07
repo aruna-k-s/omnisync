@@ -1,4 +1,4 @@
-import { issueCertificate, signerFromKeyPair } from "@omnisync/crypto";
+import { issueCertificate, signerFromKeyPair, decodeCertificate, verifyEnrollmentProof } from "@omnisync/crypto";
 import { yjsEngine } from "@omnisync/engine/yjs";
 import { Gateway } from "@omnisync/gateway";
 import { generateKeyPair, signUpdateWith } from "@omnisync/protocol";
@@ -37,12 +37,13 @@ export class World {
     this.clock = clock;
   }
 
-  async start(opts: { port?: number; useTestClock?: boolean } = {}): Promise<{ gateway: Gateway; url: string; port: number }> {
+  async start(opts: { port?: number; useTestClock?: boolean; allowedOrigins?: readonly string[] } = {}): Promise<{ gateway: Gateway; url: string; port: number }> {
     const gateway = new Gateway({
       store: this.store,
       objects: this.objects,
       sweepMs: 3_600_000,
       ...(opts.port !== undefined ? { port: opts.port } : {}),
+      ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
       auth: { issuers: [issuerKey.publicKey], identity: this.identity, revocationPollMs: 3_600_000, ...(opts.useTestClock ? { now: this.clock.now } : {}) },
     });
     const port = await gateway.listen();
@@ -100,3 +101,41 @@ export async function craftFrame(key: DeviceKey, docId: string, sessionId: numbe
   const bytes = await signUpdateWith({ docId, sessionId, seq, claimedAtMs, payload }, key.keyId, (m) => key.sign(m));
   return { sessionId, seq, bytes, claimedAtMs };
 }
+
+const b64u = (b: Uint8Array) => Buffer.from(b).toString("base64url");
+const unb64u = (s: string) => new Uint8Array(Buffer.from(s, "base64url"));
+
+/**
+ * A control-plane double. It checks the enrollment proof with the same verifier as the real service, signs a real
+ * certificate, and records it (and a grant) before answering, as the real one does.
+ */
+export function fakeControlPlane(world: World, principalId: string, opts: { calls?: { url: string; init?: RequestInit }[]; grants?: Record<string, Role>; sessionToken?: string; record?: boolean } = {}): typeof fetch {
+  const token = opts.sessionToken ?? "good-session";
+  return async (input, init) => {
+    const url = String(input);
+    opts.calls?.push({ url, ...(init ? { init } : {}) });
+    const headers = new Headers(init?.headers);
+    if (headers.get("authorization") !== `Bearer ${token}`) return new Response(JSON.stringify({ message: "no session" }), { status: 401 });
+    if (url.endsWith("/v1/me")) return Response.json({ id: principalId });
+    if (url.endsWith("/v1/certificates")) {
+      const body = JSON.parse(String(init?.body)) as { publicKey: string; proof: string; lifetimeMs?: number };
+      const publicKey = unb64u(body.publicKey);
+      if (!verifyEnrollmentProof(principalId, publicKey, unb64u(body.proof))) return new Response(JSON.stringify({ message: "proof of key possession is invalid" }), { status: 400 });
+      const now = world.clock.t;
+      const lifetime = body.lifetimeMs ?? 3_600_000;
+      const serial = globalThis.crypto.getRandomValues(new Uint8Array(16));
+      const certificate = issueCertificate({ subject: principalId, subjectPublicKey: publicKey, issuedAtMs: now, notAfterMs: now + lifetime, serial }, signerFromKeyPair(issuerKey));
+      const cert = decodeCertificate(certificate);
+      if (opts.record !== false) await world.identity.recordCertificate(
+        { serial, principalId, keyId: keyIdFor(publicKey), publicKey, issuedAtMs: now, notBeforeMs: now, notAfterMs: now + lifetime, certificate },
+        { atMs: now, actor: "system", action: "cert.issue", target: principalId },
+      );
+      for (const [doc, role] of opts.record === false ? [] : Object.entries(opts.grants ?? {})) {
+        await world.identity.setGrant(doc, principalId, role, "system", now, { atMs: now, actor: "system", action: "grant.set", target: `${doc}:${principalId}` });
+      }
+      return Response.json({ certificate: b64u(certificate), serial: Buffer.from(serial).toString("hex"), subject: principalId, notBeforeMs: now, notAfterMs: now + lifetime });
+    }
+    return new Response("nope", { status: 404 });
+  };
+}
+import { keyIdOf as keyIdFor } from "@omnisync/protocol";

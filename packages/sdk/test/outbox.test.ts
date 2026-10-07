@@ -101,6 +101,18 @@ describe.each(impls)("outbox contract: %s", (_n, setup) => {
     expect(await again.highestSeq(5)).toBe(3);
   });
 
+  it("keeps the last snapshot, and a reload sees it", async () => {
+    const { make, reopen } = setup();
+    const ob = make();
+    expect(await ob.loadSnapshot()).toBeUndefined();
+    await ob.saveSnapshot(Uint8Array.of(1, 2, 3));
+    await ob.saveSnapshot(Uint8Array.of(4, 5));
+    const bytes = Uint8Array.of(9, 9);
+    await ob.saveSnapshot(bytes);
+    bytes.fill(0);
+    expect(Array.from((await reopen(ob).loadSnapshot())!)).toEqual([9, 9]);
+  });
+
   it("does not alias the caller's bytes", async () => {
     const { make } = setup();
     const ob = make();

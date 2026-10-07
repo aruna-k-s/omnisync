@@ -15,6 +15,9 @@ export interface Outbox {
   ack(sessionId: number, seq: number): Promise<void>;
   /** The highest seq ever stored for this session (acknowledged or not), so numbering never restarts. 0 if none. */
   highestSeq(sessionId: number): Promise<number>;
+  /** The last local copy of the document taken when nothing was waiting for the gateway, so a reload while offline still shows it. */
+  loadSnapshot(): Promise<Uint8Array | undefined>;
+  saveSnapshot(bytes: Uint8Array): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -80,6 +83,15 @@ export class MemoryOutbox implements Outbox {
     return Promise.resolve(this.#highest.get(sessionId) ?? 0);
   }
 
+  #snapshot: Uint8Array | undefined;
+  loadSnapshot(): Promise<Uint8Array | undefined> {
+    return Promise.resolve(this.#snapshot?.slice());
+  }
+  saveSnapshot(bytes: Uint8Array): Promise<void> {
+    this.#snapshot = bytes.slice();
+    return Promise.resolve();
+  }
+
   close(): Promise<void> {
     return Promise.resolve();
   }
@@ -87,6 +99,7 @@ export class MemoryOutbox implements Outbox {
 
 const FRAMES = "frames";
 const META = "meta";
+const SNAPSHOT = "snapshot";
 
 function request<T>(r: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -126,6 +139,7 @@ export class IndexedDbOutbox implements Outbox {
         const frames = db.createObjectStore(FRAMES, { keyPath: "id", autoIncrement: true });
         frames.createIndex("bySeq", ["sessionId", "seq"], { unique: true });
         db.createObjectStore(META);
+        db.createObjectStore(SNAPSHOT);
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error ?? new Error("cannot open outbox"));
@@ -191,6 +205,23 @@ export class IndexedDbOutbox implements Outbox {
   async highestSeq(sessionId: number): Promise<number> {
     const db = await this.#open();
     return ((await request(db.transaction(META, "readonly").objectStore(META).get(sessionId))) as number | undefined) ?? 0;
+  }
+
+  async loadSnapshot(): Promise<Uint8Array | undefined> {
+    const db = await this.#open();
+    const v = (await request(db.transaction(SNAPSHOT, "readonly").objectStore(SNAPSHOT).get("state"))) as Uint8Array | undefined;
+    return v instanceof Uint8Array ? new Uint8Array(v) : undefined;
+  }
+
+  async saveSnapshot(bytes: Uint8Array): Promise<void> {
+    const db = await this.#open();
+    const tx = db.transaction(SNAPSHOT, "readwrite");
+    tx.objectStore(SNAPSHOT).put(bytes.slice(), "state");
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("snapshot write failed"));
+      tx.onabort = () => reject(tx.error ?? new Error("snapshot write aborted"));
+    });
   }
 
   async close(): Promise<void> {

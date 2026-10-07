@@ -227,12 +227,18 @@ importers:
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       fake-indexeddb:
         specifier: ^6.2.5
         version: 6.2.5
       fast-check:
         specifier: ^4.10.2
         version: 4.10.2
+      playwright-core:
+        specifier: 1.56.0
+        version: 1.56.0
       ws:
         specifier: ^8.22.0
         version: 8.22.0
@@ -1478,6 +1484,11 @@ packages:
 
   pino@10.4.0:
     resolution: {integrity: sha512-bk1ZMTwG/Vymx+zPoa28MhNzucFvXJWp3csrSuxuHPSMeUettaCoQ5Jvg07mtC4JGNpcfTwz41oVCnNgBK9+vA==}
+    hasBin: true
+
+  playwright-core@1.56.0:
+    resolution: {integrity: sha512-1SXl7pMfemAMSDn5rkPeZljxOCYAmQnYLBTExuh6E8USHXGSX3dx6lYZN/xPpTz1vimXmPA9CDnILvmJaB8aSQ==}
+    engines: {node: '>=18'}
     hasBin: true
 
   postcss@8.5.28:
@@ -2921,6 +2932,8 @@ snapshots:
       safe-stable-stringify: 2.5.0
       sonic-boom: 4.2.1
       thread-stream: 4.2.0
+
+  playwright-core@1.56.0: {}
 
   postcss@8.5.28:
     dependencies:

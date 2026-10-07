@@ -28,8 +28,10 @@
     "@omnisync/gateway": "workspace:*",
     "@omnisync/store": "workspace:*",
     "@types/ws": "^8.18.2",
+    "esbuild": "0.28.2",
     "fake-indexeddb": "^6.2.5",
     "fast-check": "^4.10.2",
+    "playwright-core": "1.56.0",
     "ws": "^8.22.0"
   }
 }

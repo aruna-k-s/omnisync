@@ -157,6 +157,29 @@ describe("SDK documents against a real gateway", () => {
     expect(ids.filter((i) => i.startsWith(`${oldSession}:`))).toHaveLength(2);
   });
 
+  it("reloading while offline still shows the document: the last confirmed copy plus the pending edits", async () => {
+    const first = await world.start();
+    const alice = await device("alice");
+    const ob = new MemoryOutbox();
+    const c1 = connect(first.url, alice, ob);
+    const d1 = await c1.open("doc");
+    await d1.online();
+    d1.insertText(0, "base text;");
+    d1.mapSet([], "title", "Q3");
+    await d1.synced();
+    await first.gateway.crash(); // the network is gone
+    await until(() => d1.status.state === "offline", 3000, "offline");
+    d1.insertText(d1.text.length, "typed offline");
+    await d1.close(); // the "reload"
+
+    const c2 = connect(first.url, alice, ob, { autoConnect: false });
+    const d2 = await c2.open("doc");
+    expect(d2.text).toBe("base text;typed offline"); // nothing from the network
+    expect(d2.data).toEqual({ title: "Q3" });
+    expect(d2.pending).toBe(1);
+    expect(d2.status.state).toBe("idle");
+  });
+
   it("frames the gateway already stored are answered as duplicates and cleared", async () => {
     const { url } = await world.start();
     const alice = await device("alice");
@@ -240,6 +263,8 @@ describe("SDK documents against a real gateway", () => {
       pending: () => inner.pending(),
       ack: (s, q) => inner.ack(s, q),
       highestSeq: (s) => inner.highestSeq(s),
+      loadSnapshot: () => inner.loadSnapshot(),
+      saveSnapshot: (b) => inner.saveSnapshot(b),
       close: () => inner.close(),
     };
     const doc = await connect(url, await device("alice"), ob).open("doc");

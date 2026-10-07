@@ -34,6 +34,8 @@ export interface DocumentOptions {
   syncTimeoutMs?: number;
   /** Past this long after expiry the SDK stops connecting (the gateway's own grace window decides upload-only). Default 72 h. */
   certificateGraceMs?: number;
+  /** Wait this long after a quiet change before saving a local copy of the document (default 1000 ms). */
+  snapshotDelayMs?: number;
   /** Fired once, this long before the certificate expires (default 10 minutes). */
   onCertificateExpiring?: () => void;
   certificateWarningMs?: number;
@@ -83,7 +85,7 @@ export class SyncDocument {
   refusedEdits = 0;
 
   readonly #o: DocumentOptions;
-  readonly #engineDoc: EngineDoc;
+  #engineDoc!: EngineDoc;
   readonly #clock: () => number;
   readonly #random: () => number;
   readonly #WS: typeof WebSocket;
@@ -108,6 +110,10 @@ export class SyncDocument {
   #stableTimer: ReturnType<typeof setTimeout> | undefined;
   #resendTimer: ReturnType<typeof setTimeout> | undefined;
   #expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  #snapshotTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The replica has changed (from the gateway) since the last local copy was taken. */
+  #dirty = false;
+  readonly #writes = new Set<Promise<void>>();
   #closed = false;
   #paused = false;
   #fault: string | undefined;
@@ -120,8 +126,6 @@ export class SyncDocument {
     this.#random = opts.random ?? Math.random;
     this.#WS = opts.WebSocket ?? globalThis.WebSocket;
     this.#cert = opts.certificate;
-    const actor = opts.actor ?? 1 + Math.floor(this.#random() * (2 ** 32 - 2));
-    this.#engineDoc = opts.engine.create(actor);
     this.#batcher = new Batcher<Edit>({
       ...(opts.batch?.minMs !== undefined ? { minMs: opts.batch.minMs } : {}),
       ...(opts.batch?.maxMs !== undefined ? { maxMs: opts.batch.maxMs } : {}),
@@ -141,6 +145,19 @@ export class SyncDocument {
 
   async #load(): Promise<void> {
     const o = this.#o;
+    const actor = o.actor ?? 1 + Math.floor(this.#random() * (2 ** 32 - 2));
+    // Start from the last copy taken while nothing was waiting for the gateway, so an offline reload still shows the document.
+    let base: Uint8Array | undefined;
+    try {
+      base = await o.outbox.loadSnapshot();
+    } catch {
+      base = undefined;
+    }
+    try {
+      this.#engineDoc = base ? o.engine.load(base, actor) : o.engine.create(actor);
+    } catch {
+      this.#engineDoc = o.engine.create(actor); // a damaged copy is only a cache: the gateway sends the rest
+    }
     this.#sessionId = await newSessionId(o.outbox, this.#random);
     this.#queue = await o.outbox.pending();
     // Rebuild what the user had made but the gateway had not yet confirmed.
@@ -236,7 +253,11 @@ export class SyncDocument {
     if (this.#fault !== undefined) throw new DocumentFaultError(this.#fault);
     if (!this.#loaded) throw new Error("document not loaded");
     const claimedAtMs = this.#clock();
+    // The moment an unconfirmed edit begins is the last time the replica equals what the gateway has confirmed:
+    // keep that copy, so an offline reload shows the base and the outbox supplies the rest.
+    if (this.#pending === 0 && this.#dirty) void this.#saveSnapshot();
     const payload = make(this.#engineDoc);
+    this.#dirty = true;
     this.#pending++;
     this.#batcher.add({ payload, claimedAtMs });
     this.#emitChange("local");
@@ -429,14 +450,18 @@ export class SyncDocument {
       case FrameType.SYNC_2:
         if (this.#status.state !== "syncing") return;
         this.#engineDoc.applyUpdate(frame.payload);
+        this.#dirty = true;
         this.#emitChange("remote");
         this.#goOnline("full");
+        void this.#saveSnapshot(); // the base is now known: keep it for the next offline reload
         return;
       case FrameType.UPDATE:
         // Only an update that arrived over the authenticated connection, after the handshake, is applied.
         if (this.#status.state !== "online" || this.#status.mode !== "full") return;
         this.#engineDoc.applyUpdate(frame.payload);
+        this.#dirty = true;
         this.#emitChange("remote");
+        this.#scheduleSnapshot();
         return;
       case FrameType.ACK:
         await this.#acked(frame.sessionId, frame.seq);
@@ -447,6 +472,27 @@ export class SyncDocument {
       default:
         return;
     }
+  }
+
+  /** Saves a local copy when everything made here has been confirmed, so it never holds an edit the outbox does not. */
+  #saveSnapshot(): Promise<void> {
+    clearTimeout(this.#snapshotTimer);
+    if (this.#pending !== 0 || this.#closed || this.#fault !== undefined || this.#status.mode !== "full") return Promise.resolve();
+    this.#dirty = false;
+    const write = this.#o.outbox
+      .saveSnapshot(this.#engineDoc.snapshot())
+      .catch((e: unknown) => {
+        this.errors.push(`snapshot failed: ${errorOf(e).message}`);
+      })
+      .finally(() => this.#writes.delete(write));
+    this.#writes.add(write);
+    return write;
+  }
+
+  #scheduleSnapshot(): void {
+    clearTimeout(this.#snapshotTimer);
+    this.#snapshotTimer = setTimeout(() => void this.#saveSnapshot(), this.#o.snapshotDelayMs ?? 1000);
+    (this.#snapshotTimer as { unref?: () => void }).unref?.();
   }
 
   #goOnline(mode: "full" | "upload_only"): void {
@@ -566,6 +612,7 @@ export class SyncDocument {
 
   #settle(): void {
     if (this.#pending > 0) return;
+    this.#scheduleSnapshot();
     for (const w of this.#drain.splice(0)) w.resolve();
   }
 
@@ -610,8 +657,11 @@ export class SyncDocument {
     } catch {
       /* a fault was already reported */
     }
+    await this.#saveSnapshot(); // only if nothing is waiting for the gateway
+    await Promise.allSettled([...this.#writes]);
     this.#closed = true;
     this.#batcher.dispose();
+    clearTimeout(this.#snapshotTimer);
     this.#teardownSocket();
     clearTimeout(this.#reconnectTimer);
     clearTimeout(this.#expiryTimer);
