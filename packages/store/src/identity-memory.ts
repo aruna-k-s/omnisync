@@ -56,6 +56,10 @@ export class MemoryIdentityStore implements IdentityStore {
     return this.#principals.get(id);
   }
 
+  async listPrincipals(after: string | undefined, limit: number): Promise<Principal[]> {
+    return [...this.#principals.values()].filter((p) => after === undefined || p.id > after).sort((a, b) => (a.id < b.id ? -1 : 1)).slice(0, limit);
+  }
+
   async disablePrincipal(id: string, atMs: number, audit: AuditInput): Promise<number> {
     const p = this.#principals.get(id);
     if (!p) return 0;
@@ -118,6 +122,21 @@ export class MemoryIdentityStore implements IdentityStore {
 
   async getDocument(id: string): Promise<DocumentRecord | undefined> {
     return this.#documents.get(id);
+  }
+
+  async listDocumentRecords(after: string | undefined, limit: number): Promise<DocumentRecord[]> {
+    return [...this.#documents.values()].filter((d) => after === undefined || d.id > after).sort((a, b) => (a.id < b.id ? -1 : 1)).slice(0, limit);
+  }
+
+  async listCertificatesOf(principalId: string): Promise<CertificateRecord[]> {
+    return [...this.#certs.values()]
+      .filter((c) => c.principalId === principalId)
+      .sort((a, b) => b.issuedAtMs - a.issuedAtMs || (hex(a.serial) < hex(b.serial) ? -1 : 1))
+      .slice(0, 500);
+  }
+
+  async appendAudit(audit: AuditInput): Promise<void> {
+    this.#log(audit);
   }
 
   #assertAnotherAdmin(documentId: string, excluding: string): void {

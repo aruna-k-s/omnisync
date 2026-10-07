@@ -22,6 +22,7 @@
     "@nestjs/core": "^12.1.2",
     "@nestjs/platform-fastify": "^12.1.2",
     "@omnisync/crypto": "workspace:*",
+    "@omnisync/gateway": "workspace:*",
     "@omnisync/protocol": "workspace:*",
     "@omnisync/store": "workspace:*",
     "fastify": "^5.12.5",
@@ -32,7 +33,6 @@
   },
   "devDependencies": {
     "@omnisync/config": "workspace:*",
-    "@omnisync/gateway": "workspace:*",
     "@swc/core": "^1.16.13",
     "@types/pg": "^8.23.1",
     "pg": "^8.23.1",

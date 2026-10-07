@@ -132,6 +132,32 @@ export class PgIdentityStore implements IdentityStore {
     return r.rows.map(certOf);
   }
 
+  async listPrincipals(after: string | undefined, limit: number): Promise<Principal[]> {
+    // COLLATE "C": byte order, the same as the in-memory store and as the cursor the caller passes back.
+    const r = await this.#query<PrincipalRow>(
+      `SELECT * FROM principals WHERE ($1::text IS NULL OR id COLLATE "C" > $1::text COLLATE "C") ORDER BY id COLLATE "C" LIMIT $2`,
+      [after ?? null, limit],
+    );
+    return r.rows.map(principalOf);
+  }
+
+  async listDocumentRecords(after: string | undefined, limit: number): Promise<DocumentRecord[]> {
+    const r = await this.#query<{ id: string; created_by: string; created_at_ms: string }>(
+      `SELECT * FROM document_registry WHERE ($1::text IS NULL OR id COLLATE "C" > $1::text COLLATE "C") ORDER BY id COLLATE "C" LIMIT $2`,
+      [after ?? null, limit],
+    );
+    return r.rows.map((row) => ({ id: row.id, createdBy: row.created_by, createdAtMs: Number(row.created_at_ms) }));
+  }
+
+  async listCertificatesOf(principalId: string): Promise<CertificateRecord[]> {
+    const r = await this.#query<CertRow>("SELECT * FROM certificates WHERE principal_id = $1 ORDER BY issued_at DESC, serial LIMIT 500", [principalId]);
+    return r.rows.map(certOf);
+  }
+
+  async appendAudit(audit: AuditInput): Promise<void> {
+    await this.#tx((c) => this.#audit(c, audit));
+  }
+
   async createDocument(id: string, createdBy: string, atMs: number, audit: AuditInput): Promise<boolean> {
     return this.#tx(async (c) => {
       const ins = await c.query("INSERT INTO document_registry (id, created_by, created_at_ms) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", [id, createdBy, atMs]);

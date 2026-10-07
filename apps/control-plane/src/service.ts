@@ -132,20 +132,28 @@ export class IdentityService {
     return id;
   }
 
-  async #requireDocAdmin(actor: Principal, documentId: string): Promise<void> {
+  /**
+   * Who may manage a document's grants: its admins, or (`asOrg`) an organisation admin, who needs no grant of
+   * their own but only for documents that exist. Anyone else sees "not found", so ids cannot be probed.
+   */
+  async #requireDocAdmin(actor: Principal, documentId: string, asOrg: boolean): Promise<void> {
     if (!DOC_ID.test(documentId)) throw new ServiceError("bad_request", "invalid document id");
+    if (asOrg) {
+      if (actor.orgRole !== "admin") throw new ServiceError("forbidden", "organisation admin only");
+      if (!(await this.store.getDocument(documentId))) throw new ServiceError("not_found", "no such document");
+      return;
+    }
     const role = await this.store.roleOf(documentId, actor.id);
-    // Not-found and not-admin look the same, so ids cannot be probed.
     if (role === undefined || !roleAtLeast(role, "admin")) throw new ServiceError("not_found", "no such document");
   }
 
-  async listGrants(actor: Principal, documentId: string): Promise<Grant[]> {
-    await this.#requireDocAdmin(actor, documentId);
+  async listGrants(actor: Principal, documentId: string, asOrg = false): Promise<Grant[]> {
+    await this.#requireDocAdmin(actor, documentId, asOrg);
     return this.store.listGrants(documentId);
   }
 
-  async setGrant(actor: Principal, documentId: string, targetId: string, role: unknown): Promise<void> {
-    await this.#requireDocAdmin(actor, documentId);
+  async setGrant(actor: Principal, documentId: string, targetId: string, role: unknown, asOrg = false): Promise<void> {
+    await this.#requireDocAdmin(actor, documentId, asOrg);
     if (typeof role !== "string" || !(ROLES as readonly string[]).includes(role)) throw new ServiceError("bad_request", "invalid role");
     if (!(await this.store.getPrincipal(targetId))) throw new ServiceError("not_found", "no such principal");
     try {
@@ -155,8 +163,8 @@ export class IdentityService {
     }
   }
 
-  async removeGrant(actor: Principal, documentId: string, targetId: string): Promise<void> {
-    await this.#requireDocAdmin(actor, documentId);
+  async removeGrant(actor: Principal, documentId: string, targetId: string, asOrg = false): Promise<void> {
+    await this.#requireDocAdmin(actor, documentId, asOrg);
     let removed: boolean;
     try {
       removed = await this.store.removeGrant(documentId, targetId, this.#audit(actor.id, "grant.remove", `${documentId}:${targetId}`), { keepOneAdmin: true });
@@ -164,6 +172,12 @@ export class IdentityService {
       throw asConflict(e);
     }
     if (!removed) throw new ServiceError("not_found", "no such grant");
+  }
+
+  /** Records a ledger read before it happens; `appendAudit` failing means the read must not go ahead. */
+  async auditLedgerExport(actor: Principal, tenant: string): Promise<void> {
+    if (actor.orgRole !== "admin") throw new ServiceError("forbidden", "organisation admin only");
+    await this.store.appendAudit(this.#audit(actor.id, "ledger.export", tenant));
   }
 }
 

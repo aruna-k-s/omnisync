@@ -220,5 +220,63 @@ export function identityStoreContract(name: string, make: () => Promise<Identity
       expect(await s.getDocument("other")).toBeUndefined();
       await s.close();
     });
+
+    it("lists principals and documents in ascending id order, `after` exclusive, without gaps", async () => {
+      const s = await make();
+      const people: Principal[] = [];
+      for (let i = 0; i < 7; i++) people.push(await person(s, `user${i}`));
+      const sorted = people.map((p) => p.id).sort();
+      const seen: string[] = [];
+      for (let after: string | undefined; ; ) {
+        const page = await s.listPrincipals(after, 3);
+        expect(page.length).toBeLessThanOrEqual(3);
+        seen.push(...page.map((p) => p.id));
+        const last = page[page.length - 1];
+        if (page.length < 3 || !last) break;
+        after = last.id;
+      }
+      expect(seen).toEqual(sorted);
+      expect(await s.listPrincipals(sorted[6], 3)).toEqual([]);
+      await s.disablePrincipal(people[0]?.id ?? "", NOW, audit("principal.disable"));
+      expect((await s.listPrincipals(undefined, 100)).find((p) => p.id === people[0]?.id)?.disabledAtMs).toBe(NOW);
+
+      const owner = people[1]?.id ?? "";
+      const ids = ["0b6f0f0e-7d2c-4c5e-9b0a-1f2e3d4c5b6a", "1b6f0f0e-7d2c-4c5e-9b0a-1f2e3d4c5b6a", "2b6f0f0e-7d2c-4c5e-9b0a-1f2e3d4c5b6a", "3b6f0f0e-7d2c-4c5e-9b0a-1f2e3d4c5b6a"];
+      for (const id of [ids[2], ids[0], ids[3], ids[1]]) await s.createDocument(id ?? "", owner, NOW, audit("document.create", id));
+      expect((await s.listDocumentRecords(undefined, 100)).map((d) => d.id)).toEqual(ids);
+      expect((await s.listDocumentRecords(ids[1], 2)).map((d) => d.id)).toEqual([ids[2], ids[3]]);
+      expect((await s.listDocumentRecords(undefined, 2)).map((d) => d.id)).toEqual([ids[0], ids[1]]);
+      expect(await s.listDocumentRecords(ids[3], 5)).toEqual([]);
+      await s.close();
+    });
+
+    it("lists one principal's certificates, newest first, and nobody else's", async () => {
+      const s = await make();
+      const a = await person(s, "alice");
+      const b = await person(s, "bob");
+      await s.recordCertificate(cert(1, a.id, { issuedAtMs: NOW + 10 }), audit("cert.issue"));
+      await s.recordCertificate(cert(2, a.id, { issuedAtMs: NOW + 30 }), audit("cert.issue"));
+      await s.recordCertificate(cert(3, b.id, { issuedAtMs: NOW + 20 }), audit("cert.issue"));
+      await s.recordCertificate(cert(4, a.id, { issuedAtMs: NOW + 20 }), audit("cert.issue"));
+      await s.revokeCertificate(serial(4), NOW + 99, "lost", audit("cert.revoke"));
+      const mine = await s.listCertificatesOf(a.id);
+      expect(mine.map((c) => c.serial[0])).toEqual([2, 4, 1]);
+      expect(mine[1]).toMatchObject({ revokedAtMs: NOW + 99, revokeReason: "lost" });
+      expect((await s.listCertificatesOf(b.id)).map((c) => c.serial[0])).toEqual([3]);
+      expect(await s.listCertificatesOf("ghost")).toEqual([]);
+      await s.close();
+    });
+
+    it("appendAudit adds exactly one event and changes nothing else", async () => {
+      const s = await make();
+      const a = await person(s, "alice");
+      const before = (await s.listAudit(0, 100)).length;
+      await s.appendAudit({ atMs: NOW + 5, actor: a.id, action: "ledger.export", target: "acme", detail: "x" });
+      const all = await s.listAudit(0, 100);
+      expect(all).toHaveLength(before + 1);
+      expect(all[all.length - 1]).toMatchObject({ atMs: NOW + 5, actor: a.id, action: "ledger.export", target: "acme", detail: "x" });
+      expect(await s.listPrincipals(undefined, 10)).toHaveLength(1);
+      await s.close();
+    });
   });
 }

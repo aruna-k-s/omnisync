@@ -99,6 +99,8 @@ export interface IdentityStore {
     audit: AuditInput,
   ): Promise<Principal>;
   getPrincipal(id: string): Promise<Principal | undefined>;
+  /** Ascending by id (byte order), id > `after` when given. For the admin console. */
+  listPrincipals(after: string | undefined, limit: number): Promise<Principal[]>;
   /** Disables a principal and revokes all their certificates, atomically. Returns certificates revoked. */
   disablePrincipal(id: string, atMs: number, audit: AuditInput): Promise<number>;
 
@@ -113,9 +115,13 @@ export interface IdentityStore {
    */
   createDocument(id: string, createdBy: string, atMs: number, audit: AuditInput): Promise<boolean>;
   getDocument(id: string): Promise<DocumentRecord | undefined>;
+  /** Ascending by id (byte order), id > `after` when given. For the admin console. */
+  listDocumentRecords(after: string | undefined, limit: number): Promise<DocumentRecord[]>;
 
   /** Certificates in ascending serial order, serial > `after` when given. For ledger export. */
   listCertificates(after: Uint8Array | undefined, limit: number): Promise<CertificateRecord[]>;
+  /** One principal's certificates, newest first, at most 500. */
+  listCertificatesOf(principalId: string): Promise<CertificateRecord[]>;
 
   /** Creates or changes a grant. */
   setGrant(
@@ -134,6 +140,8 @@ export interface IdentityStore {
   /** The gateway's hot path: one batched call answers many connections. Order matches `queries`. */
   authorize(queries: readonly AuthorizeQuery[]): Promise<AuthorizeResult[]>;
 
+  /** Records one event with no other change (a read worth a trace, such as a ledger export). */
+  appendAudit(audit: AuditInput): Promise<void>;
   /** Oldest first, ids greater than `afterId`. */
   listAudit(afterId: number, limit: number): Promise<AuditEvent[]>;
 

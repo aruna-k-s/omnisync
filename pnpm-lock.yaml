@@ -53,6 +53,9 @@ importers:
       '@omnisync/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@omnisync/gateway':
+        specifier: workspace:*
+        version: link:../gateway
       '@omnisync/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -78,9 +81,6 @@ importers:
       '@omnisync/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@omnisync/gateway':
-        specifier: workspace:*
-        version: link:../gateway
       '@omnisync/verifier':
         specifier: workspace:*
         version: link:../../packages/verifier

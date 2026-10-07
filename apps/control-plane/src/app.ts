@@ -4,6 +4,7 @@ import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import type { IdentityStore } from "@omnisync/store";
 import { resolveConfig, type ControlPlaneConfig, type ResolvedConfig } from "./config.js";
+import { AdminController, AdminGuard } from "./admin.js";
 import { ApiController, AuthController, ErrorFilter, HealthController, SessionGuard } from "./http.js";
 import { OpenIdLogin, type OidcLogin } from "./oidc.js";
 import { IdentityService } from "./service.js";
@@ -14,13 +15,14 @@ class ControlPlaneModule {
   static register(cfg: ResolvedConfig, identity: IdentityStore, oidc: OidcLogin): DynamicModule {
     return {
       module: ControlPlaneModule,
-      controllers: [HealthController, AuthController, ApiController],
+      controllers: [HealthController, AuthController, ApiController, AdminController],
       providers: [
         { provide: CONFIG, useValue: cfg },
         { provide: IDENTITY, useValue: identity },
         { provide: OIDC, useValue: oidc },
         IdentityService,
         SessionGuard,
+        AdminGuard,
       ],
     };
   }

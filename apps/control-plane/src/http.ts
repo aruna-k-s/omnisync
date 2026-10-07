@@ -81,10 +81,13 @@ export class ErrorFilter implements ExceptionFilter {
 }
 
 const LOGIN_COOKIE = "omnisync_login";
+/** Where a single-page app asked to be sent back to; re-checked against the allowlist at the callback. */
+const RETURN_COOKIE = "omnisync_return";
 
-function loginCookie(value: string, maxAgeS: number, secure: boolean): string {
-  return `${LOGIN_COOKIE}=${value}; Path=/v1/auth; Max-Age=${maxAgeS}; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
+function cookie(name: string, value: string, maxAgeS: number, secure: boolean): string {
+  return `${name}=${value}; Path=/v1/auth; Max-Age=${maxAgeS}; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
 }
+const loginCookie = (value: string, maxAgeS: number, secure: boolean): string => cookie(LOGIN_COOKIE, value, maxAgeS, secure);
 
 function cookieValue(header: string | undefined, name: string): string | undefined {
   for (const part of (header ?? "").split(";")) {
@@ -127,6 +130,10 @@ export class AuthController {
   /** Sends the browser to the company IdP. */
   @Get("login")
   async login(@Req() req: FastifyRequest, @Res() reply: FastifyReply): Promise<void> {
+    const returnTo = new URL(req.url, "http://control-plane").searchParams.getAll("return_to");
+    if (returnTo.length > 1 || (returnTo.length === 1 && !this.cfg.returnTo.has(returnTo[0] as string))) {
+      throw new BadRequestException("return_to is not allowed");
+    }
     const wait = this.limiter.take(req.ip);
     if (wait > 0) {
       void reply.status(429).header("retry-after", String(Math.ceil(wait / 1000))).send({ error: "too many login attempts" });
@@ -135,23 +142,43 @@ export class AuthController {
     const { authorizationUrl, state } = await this.oidc.begin();
     // Only the browser that started this login may finish it: the state is bound to a cookie, so a callback
     // URL handed to someone else (login CSRF) is useless.
-    void reply
-      .header("cache-control", "no-store")
-      .header("set-cookie", loginCookie(state, 600, this.cfg.oidc.redirectUri.startsWith("https:")))
-      .redirect(authorizationUrl, 302);
+    const secure = this.cfg.oidc.redirectUri.startsWith("https:");
+    const cookies = [loginCookie(state, 600, secure)];
+    if (returnTo[0] !== undefined) cookies.push(cookie(RETURN_COOKIE, encodeURIComponent(returnTo[0]), 600, secure));
+    void reply.header("cache-control", "no-store").header("set-cookie", cookies).redirect(authorizationUrl, 302);
   }
 
-  /** The IdP returns here. The session token is returned as JSON; a browser SDK posts it to its own page. */
+  /**
+   * The IdP returns here. By default the session token is returned as JSON. A single-page app that started the
+   * login with an allowlisted `return_to` is redirected there instead, with the token in the URL fragment, so it
+   * reaches the page but no server log or Referer header.
+   */
   @Get("callback")
-  async callback(@Req() req: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply) {
+  async callback(@Req() req: FastifyRequest, @Res() reply: FastifyReply): Promise<void> {
     const url = new URL(req.url, "http://control-plane");
     if (url.searchParams.has("error")) throw new BadRequestException("login refused by identity provider");
     const state = url.searchParams.get("state");
     if (state === null || cookieValue(req.headers.cookie, LOGIN_COOKIE) !== state) throw new OidcError("bad_state", "login was not started in this browser");
     const identity = await this.oidc.complete(url);
     const { principal, sessionToken } = await this.svc.login(identity);
-    void reply.header("cache-control", "no-store").header("set-cookie", loginCookie("", 0, this.cfg.oidc.redirectUri.startsWith("https:")));
-    return { sessionToken, principal: view(principal) };
+    const secure = this.cfg.oidc.redirectUri.startsWith("https:");
+    void reply.header("cache-control", "no-store").header("set-cookie", [loginCookie("", 0, secure), cookie(RETURN_COOKIE, "", 0, secure)]);
+    // Checked again here: a cookie set from a sibling subdomain must not be able to name a URL of its own.
+    const returnTo = decodeCookie(cookieValue(req.headers.cookie, RETURN_COOKIE));
+    if (returnTo !== undefined && this.cfg.returnTo.has(returnTo)) {
+      void reply.redirect(`${returnTo}#session=${encodeURIComponent(sessionToken)}`, 302);
+      return;
+    }
+    void reply.send({ sessionToken, principal: view(principal) });
+  }
+}
+
+function decodeCookie(v: string | undefined): string | undefined {
+  if (!v) return undefined;
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return undefined;
   }
 }
 

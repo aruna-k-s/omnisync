@@ -146,6 +146,8 @@ export class FaultyIdentityStore implements IdentityStore {
   down = false;
   /** While true authorize() never settles, like a database that stopped answering. */
   hang = false;
+  /** While true appendAudit() fails and nothing else does, to prove a read is refused when it cannot be traced. */
+  appendAuditFails = false;
   /** Number of authorize() calls, to prove batching. */
   authorizeCalls = 0;
 
@@ -162,6 +164,23 @@ export class FaultyIdentityStore implements IdentityStore {
   async getPrincipal(id: string): Promise<Principal | undefined> {
     this.#gate();
     return this.inner.getPrincipal(id);
+  }
+  async listPrincipals(after: string | undefined, limit: number): Promise<Principal[]> {
+    this.#gate();
+    return this.inner.listPrincipals(after, limit);
+  }
+  async listDocumentRecords(after: string | undefined, limit: number): Promise<DocumentRecord[]> {
+    this.#gate();
+    return this.inner.listDocumentRecords(after, limit);
+  }
+  async listCertificatesOf(principalId: string): Promise<CertificateRecord[]> {
+    this.#gate();
+    return this.inner.listCertificatesOf(principalId);
+  }
+  async appendAudit(a: AuditInput): Promise<void> {
+    this.#gate();
+    if (this.appendAuditFails) throw new StoreUnavailableError("injected audit fault");
+    return this.inner.appendAudit(a);
   }
   async disablePrincipal(id: string, atMs: number, a: AuditInput): Promise<number> {
     this.#gate();
