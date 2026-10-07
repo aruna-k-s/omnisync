@@ -5,9 +5,11 @@ import {
   CertificateError,
   decodeCertificate,
   encodeAuthResponse,
+  encodeAuthResponseWith,
   issueCertificate,
   newNonce,
   signEnrollmentProof,
+  signEnrollmentProofWith,
   signerFromKeyPair,
   trustAnchors,
   verifyEnrollmentProof,
@@ -157,6 +159,40 @@ describe("auth proof", () => {
       t[i] = (t[i] as number) ^ 0x10;
       expect(verifyAuthResponse(t, "doc-1", nonce, trust).ok).toBe(false);
     }
+  });
+});
+
+describe("proofs made through a callback (a key that cannot be exported)", () => {
+  const PKCS8_PREFIX = Uint8Array.from([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+  const webCryptoSigner = async (seedBytes: Uint8Array) => {
+    const key = await globalThis.crypto.subtle.importKey("pkcs8", new Uint8Array([...PKCS8_PREFIX, ...seedBytes]) as BufferSource, { name: "Ed25519" }, false, ["sign"]);
+    return async (m: Uint8Array) => new Uint8Array(await globalThis.crypto.subtle.sign({ name: "Ed25519" }, key, m as BufferSource));
+  };
+
+  it("the AUTH response is byte-identical to the one made with the secret key, and verifies", async () => {
+    const cert = mk();
+    const nonce = newNonce();
+    const sign = await webCryptoSigner(seed(1));
+    const viaCallback = await encodeAuthResponseWith(cert, sign, "doc-1", nonce);
+    expect(viaCallback).toEqual(encodeAuthResponse(cert, device.secretKey, "doc-1", nonce));
+    expect(verifyAuthResponse(viaCallback, "doc-1", nonce, trust).ok).toBe(true);
+  });
+
+  it("the enrollment proof is byte-identical and verifies", async () => {
+    const sign = await webCryptoSigner(seed(1));
+    const viaCallback = await signEnrollmentProofWith("p_1", device.publicKey, sign);
+    expect(viaCallback).toEqual(signEnrollmentProof("p_1", device.publicKey, device.secretKey));
+    expect(verifyEnrollmentProof("p_1", device.publicKey, viaCallback)).toBe(true);
+    expect(verifyEnrollmentProof("p_2", device.publicKey, viaCallback)).toBe(false);
+  });
+
+  it("a signer with the wrong key, or returning the wrong length, is refused or fails verification", async () => {
+    const cert = mk();
+    const nonce = newNonce();
+    const wrong = await webCryptoSigner(seed(2));
+    expect(verifyAuthResponse(await encodeAuthResponseWith(cert, wrong, "doc-1", nonce), "doc-1", nonce, trust)).toEqual({ ok: false, reason: "bad_proof" });
+    await expect(encodeAuthResponseWith(cert, () => new Uint8Array(10), "doc-1", nonce)).rejects.toThrow(/wrong length/);
+    await expect(signEnrollmentProofWith("p_1", device.publicKey, () => new Uint8Array(65))).rejects.toThrow(/wrong length/);
   });
 });
 

@@ -1,4 +1,4 @@
-import { encodeVarint, readVarint, signDetached, verifyDetached } from "@omnisync/protocol";
+import { encodeVarint, readVarint, signDetached, verifyDetached, type MessageSigner } from "@omnisync/protocol";
 import {
   certificateHash,
   concat,
@@ -33,6 +33,18 @@ export function encodeAuthResponse(
   nonce: Uint8Array,
 ): Uint8Array {
   const proof = signDetached(proofMessage(docId, nonce, certBytes), secretKey);
+  return concat(encodeVarint(certBytes.length), certBytes, proof);
+}
+
+/** Same bytes as `encodeAuthResponse`, with the possession proof made by a callback (a non-extractable key). */
+export async function encodeAuthResponseWith(
+  certBytes: Uint8Array,
+  sign: MessageSigner,
+  docId: string,
+  nonce: Uint8Array,
+): Promise<Uint8Array> {
+  const proof = await sign(proofMessage(docId, nonce, certBytes));
+  if (proof.length !== 64) throw new Error("signer returned a signature of the wrong length");
   return concat(encodeVarint(certBytes.length), certBytes, proof);
 }
 
@@ -82,6 +94,13 @@ function enrollMessage(principalId: string, publicKey: Uint8Array): Uint8Array {
  */
 export function signEnrollmentProof(principalId: string, publicKey: Uint8Array, secretKey: Uint8Array): Uint8Array {
   return signDetached(enrollMessage(principalId, publicKey), secretKey);
+}
+
+/** Same proof as `signEnrollmentProof`, made by a callback so the secret key can stay non-extractable. */
+export async function signEnrollmentProofWith(principalId: string, publicKey: Uint8Array, sign: MessageSigner): Promise<Uint8Array> {
+  const proof = await sign(enrollMessage(principalId, publicKey));
+  if (proof.length !== 64) throw new Error("signer returned a signature of the wrong length");
+  return proof;
 }
 
 export function verifyEnrollmentProof(principalId: string, publicKey: Uint8Array, proof: Uint8Array): boolean {

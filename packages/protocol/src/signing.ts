@@ -110,18 +110,36 @@ export interface UpdateInput {
   readonly payload: Uint8Array;
 }
 
-/** Builds and signs an UPDATE frame. Returns wire bytes. */
-export function signUpdate(input: UpdateInput, key: KeyPair): Uint8Array {
-  const base = {
+function updateBase(input: UpdateInput, keyId: Uint8Array) {
+  return {
     type: FrameType.UPDATE,
     flags: FLAG_SIGNED,
     sessionId: input.sessionId,
     seq: input.seq,
     claimedAtMs: input.claimedAtMs,
     payload: input.payload,
-    keyId: key.keyId,
+    keyId,
   };
+}
+
+/** Builds and signs an UPDATE frame. Returns wire bytes. */
+export function signUpdate(input: UpdateInput, key: KeyPair): Uint8Array {
+  const base = updateBase(input, key.keyId);
   const signature = rawSign(signedMessage(input.docId, encodeUnsignedPart(base)), key.secretKey);
+  return encodeFrame({ ...base, signature });
+}
+
+/** Signs a message with a key that may never leave its holder (a non-extractable WebCrypto key, a KMS). */
+export type MessageSigner = (message: Uint8Array) => Uint8Array | Promise<Uint8Array>;
+
+/**
+ * Same frame as `signUpdate`, byte for byte, but the signature comes from a callback so the secret key can stay
+ * inside a non-extractable key. Ed25519 is deterministic: a callback backed by the same key yields the same bytes.
+ */
+export async function signUpdateWith(input: UpdateInput, keyId: Uint8Array, sign: MessageSigner): Promise<Uint8Array> {
+  const base = updateBase(input, keyId);
+  const signature = await sign(signedMessage(input.docId, encodeUnsignedPart(base)));
+  if (signature.length !== 64) throw new Error("signer returned a signature of the wrong length");
   return encodeFrame({ ...base, signature });
 }
 

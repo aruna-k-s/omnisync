@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { getEngine, type EngineDoc, type EngineName } from "@omnisync/engine";
+import { getEngine, type EngineDoc, type EngineName, type Json, type Path } from "@omnisync/engine";
 import { encodeAuthResponse } from "@omnisync/crypto";
 import { FrameType, decodeFrame, encodeFrame, signUpdate, type KeyPair } from "@omnisync/protocol";
 import { ROLES, type Role } from "@omnisync/store";
@@ -127,6 +127,23 @@ export class GatewayClient {
 
   delete(index: number, length: number): Promise<void> {
     return this.#publish(this.doc.deleteText(index, length));
+  }
+
+  /** Structured data edits (maps and arrays). Same contract as `insert`: signed now, resolved when stored. */
+  mapSet(path: Path, key: string, value: Json): Promise<void> {
+    return this.#publish(this.doc.mapSet(path, key, value));
+  }
+
+  mapDelete(path: Path, key: string): Promise<void> {
+    return this.#publish(this.doc.mapDelete(path, key));
+  }
+
+  arrayInsert(path: Path, index: number, values: readonly Json[]): Promise<void> {
+    return this.#publish(this.doc.arrayInsert(path, index, values));
+  }
+
+  arrayDelete(path: Path, index: number, count: number): Promise<void> {
+    return this.#publish(this.doc.arrayDelete(path, index, count));
   }
 
   /** SYNC_1 → SYNC_2: pulls everything the gateway has that this replica lacks. */
