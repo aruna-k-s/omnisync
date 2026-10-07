@@ -44,7 +44,28 @@ export async function createControlPlane(config: ControlPlaneConfig, deps: Contr
     { logger: false },
   );
   app.useGlobalFilters(new ErrorFilter());
+  // A console served from another origin may call the API, but only the origins it may be sent back to after login.
+  // Bearer tokens, no cookies: credentials are never allowed cross-origin.
+  const origins = new Set([...cfg.returnTo].map((u) => new URL(u).origin));
+  const fastify = app.getHttpAdapter().getInstance();
+  if (origins.size > 0) {
+    fastify.addHook("onRequest", async (req, reply) => {
+      const origin = req.headers.origin;
+      if (typeof origin !== "string" || !origins.has(origin)) return;
+      void reply.header("access-control-allow-origin", origin).header("vary", "Origin").header("access-control-expose-headers", "retry-after");
+      if (req.method === "OPTIONS" && typeof req.headers["access-control-request-method"] === "string") {
+        void reply
+          .header("access-control-allow-methods", "GET, POST, PUT, DELETE")
+          .header("access-control-allow-headers", "authorization, content-type")
+          .header("access-control-max-age", "600")
+          .code(204)
+          .send();
+        return reply;
+      }
+      return;
+    });
+  }
   await app.init();
-  await app.getHttpAdapter().getInstance().ready();
+  await fastify.ready();
   return app;
 }

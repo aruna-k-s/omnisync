@@ -97,3 +97,7 @@ New action names: `ledger.export`. Existing `grant.set`, `grant.remove`, `cert.r
 ## Protected paths touched
 
 `apps/control-plane/src/{service,http,config}.ts` and the login code in `http.ts` (login, session, redirect). They wait for the 24-hour human review like the rest of the identity code. No change to token format, certificate issuance or the OIDC exchange itself.
+
+## CORS (added with the console, week 8b)
+
+The console is served from another origin than the control plane. The control plane answers cross-origin requests **only** from the origins of the `returnTo` entries (scheme, host and port, exact match): it echoes that origin in `access-control-allow-origin` with `vary: Origin` on every response, errors included, and answers preflights (`OPTIONS` with `access-control-request-method`) with 204, allowing `GET, POST, PUT, DELETE` and the headers `authorization, content-type`. It never sends `access-control-allow-credentials`: the API takes a bearer token, not cookies, so a foreign page cannot ride on the browser's ambient credentials. Other origins, and every origin when `returnTo` is empty, get no CORS headers and no preflight answer. No new dependency: one Fastify hook in `app.ts`.
