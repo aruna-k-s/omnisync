@@ -20,6 +20,13 @@ Checkpoints are locked ({{ .Values.storage.checkpoint.lockMode }}) for {{ .Value
 {{- if eq (upper .Values.storage.checkpoint.lockMode) "COMPLIANCE" }}
 That cannot be shortened by anyone, including you.
 {{- end }}
+{{- if .Values.monitoring.enabled }}
+
+Metrics are served on port {{ .Values.monitoring.port }} of the gateway and control plane, to the namespace labelled {{ range $k, $v := .Values.monitoring.scrape.namespaceLabels }}{{ $k }}={{ $v }} {{ end }}only. What the alerts mean and what to do: docs/operations.md.
+{{- if not .Values.monitoring.prometheusRule.enabled }}
+No alert rules were installed (monitoring.prometheusRule.enabled is false).
+{{- end }}
+{{- end }}
 {{- if .Values.minio.enabled }}
 
 The bundled MinIO is a single node for evaluation. The gateway restarts until its setup Job has created the buckets; that takes a minute.

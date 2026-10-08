@@ -22,6 +22,12 @@ spec:
       port: 8080
       targetPort: http
       protocol: TCP
+    {{- if .Values.monitoring.enabled }}
+    - name: metrics
+      port: {{ .Values.monitoring.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "omnisync.selectorLabels" $ctx | nindent 4 }}
 ---
@@ -76,6 +82,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - { name: http, containerPort: 8080, protocol: TCP }
+            {{- if .Values.monitoring.enabled }}
+            - { name: metrics, containerPort: {{ .Values.monitoring.port }}, protocol: TCP }
+            {{- end }}
           env:
             - { name: PORT, value: "8080" }
             - { name: OMNISYNC_ENGINE, value: {{ .Values.engine | quote }} }
@@ -96,6 +105,17 @@ spec:
             {{- include "omnisync.secretEnv" (dict "env" "DATABASE_URL" "secret" $secret "key" "database-url" "optional" false) | nindent 12 }}
             {{- include "omnisync.secretEnv" (dict "env" "AWS_ACCESS_KEY_ID" "secret" $secret "key" "s3-access-key-id" "optional" false) | nindent 12 }}
             {{- include "omnisync.secretEnv" (dict "env" "AWS_SECRET_ACCESS_KEY" "secret" $secret "key" "s3-secret-access-key" "optional" false) | nindent 12 }}
+            {{- if .Values.monitoring.enabled }}
+            # /metrics on its own port, reachable only from the Prometheus namespace (network policy), never through the ingress.
+            - { name: OMNISYNC_METRICS_PORT, value: {{ .Values.monitoring.port | quote }} }
+            - { name: OMNISYNC_METRICS_HOST, value: "0.0.0.0" }
+            {{- if .Values.monitoring.tracing.enabled }}
+            - { name: OMNISYNC_TRACES_ENABLED, value: "1" }
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ .Values.monitoring.tracing.endpoint | quote }} }
+            - { name: OMNISYNC_TRACE_SAMPLE_RATIO, value: {{ .Values.monitoring.tracing.sampleRatio | quote }} }
+            {{- include "omnisync.secretEnv" (dict "env" "OTEL_EXPORTER_OTLP_HEADERS" "secret" $secret "key" "otlp-headers" "optional" true) | nindent 12 }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.gateway.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

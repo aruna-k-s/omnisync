@@ -1,0 +1,131 @@
+{{- $m := .Values.monitoring }}
+{{- if $m.enabled }}
+{{- $f := include "omnisync.fullname" . }}
+{{- $a := $m.prometheusRule.alerts }}
+{{- $runbook := $m.prometheusRule.runbookUrl }}
+{{- if $m.serviceMonitor.enabled }}
+---
+# One ServiceMonitor for the two services that have a metrics port (the web pods have none).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $f }}
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "monitoring") | nindent 4 }}
+    {{- with $m.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace | quote }}]
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/part-of: omnisync
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [gateway, control-plane]
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ $m.serviceMonitor.interval }}
+      scheme: http
+{{- end }}
+{{- if $m.prometheusRule.enabled }}
+---
+# Thresholds come from values (validated as numbers by the schema, never as text), so a value cannot add PromQL.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $f }}
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "monitoring") | nindent 4 }}
+    {{- with $m.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: omnisync
+      rules:
+        - alert: OmniSyncCheckpointStale
+          expr: max(omnisync_checkpoint_age_seconds) > {{ $a.checkpointAgeSeconds }}
+          for: 5m
+          labels:
+            severity: critical
+            component: gateway
+          annotations:
+            summary: Evidence checkpoints are not being written
+            description: Acknowledged edits have not been covered by an uploaded signed checkpoint for more than {{ $a.checkpointAgeSeconds }} seconds. The ledger is intact but unwitnessed until this clears.
+            runbook_url: {{ printf "%s#checkpoint-age" $runbook }}
+        - alert: OmniSyncSignatureFailures
+          expr: sum(rate(omnisync_signature_failures_total[5m])) > {{ $a.signatureFailuresPerSecond }}
+          for: 5m
+          labels:
+            severity: warning
+            component: gateway
+          annotations:
+            summary: Many updates are being refused for their signature
+            description: The gateway has refused updates for an unknown key, a bad signature or a wrong frame type at more than {{ $a.signatureFailuresPerSecond }} per second for 5 minutes. That is a misconfigured client or someone probing.
+            runbook_url: {{ printf "%s#signature-failures" $runbook }}
+        - alert: OmniSyncLedgerAppendSlow
+          expr: histogram_quantile(0.99, sum by (le) (rate(omnisync_ledger_append_seconds_bucket[5m]))) > {{ $a.ledgerAppendP99Seconds }}
+          for: 10m
+          labels:
+            severity: warning
+            component: gateway
+          annotations:
+            summary: Writing to the update log is slow
+            description: The 99th percentile of one write to the update log has been above {{ $a.ledgerAppendP99Seconds }} seconds for 10 minutes. Edits are queueing behind the database.
+            runbook_url: {{ printf "%s#ledger-append-latency" $runbook }}
+        {{- if $a.licensedConnections }}
+        - alert: OmniSyncConnectionsNearLimit
+          expr: sum(omnisync_connections_active) > {{ $a.connectionsWarnRatio }} * {{ $a.licensedConnections }}
+          for: 5m
+          labels:
+            severity: warning
+            component: gateway
+          annotations:
+            summary: Open connections are close to the licensed limit
+            description: Open connections have been above {{ $a.connectionsWarnRatio }} of the {{ $a.licensedConnections }} connections your licence allows for 5 minutes. OmniSync does not enforce the limit; this alert is the warning.
+            runbook_url: {{ printf "%s#connections-near-the-limit" $runbook }}
+        {{- end }}
+        {{- if $a.postgresReplicaLagSeconds }}
+        - alert: OmniSyncPostgresReplicaLag
+          expr: max({{ $a.postgresReplicaLagMetric }}) > {{ $a.postgresReplicaLagSeconds }}
+          for: 5m
+          labels:
+            severity: warning
+            component: postgresql
+          annotations:
+            summary: The PostgreSQL replica is behind
+            description: Replica lag has been above {{ $a.postgresReplicaLagSeconds }} seconds for 5 minutes. A failover now would lose the acknowledged edits the replica has not received.
+            runbook_url: {{ printf "%s#postgresql-replica-lag" $runbook }}
+        {{- end }}
+        - alert: OmniSyncMetricsMissing
+          expr: absent(omnisync_connections_active)
+          for: 10m
+          labels:
+            severity: warning
+            component: gateway
+          annotations:
+            summary: No OmniSync metrics are arriving
+            description: Prometheus has had no gateway metrics for 10 minutes, so none of the other OmniSync alerts can fire. The gateway is down, or the scrape is broken.
+            runbook_url: {{ printf "%s#metrics-missing" $runbook }}
+{{- end }}
+{{- if $m.dashboard.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $f }}-dashboard
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "monitoring") | nindent 4 }}
+    {{- with $m.dashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  omnisync.json: |-
+    {{- .Files.Get "files/omnisync-dashboard.json" | trim | nindent 4 }}
+{{- end }}
+{{- end }}

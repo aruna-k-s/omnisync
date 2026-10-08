@@ -20,7 +20,7 @@ from render_chart import TemplateError, manifests, render_chart  # noqa: E402
 
 CHART = os.path.join(HERE, "..", "helm", "omnisync")
 VALUES = os.path.join(HERE, "values")
-CASES = ["minimal", "evaluation", "production"]
+CASES = ["minimal", "evaluation", "production", "monitoring"]
 _cache: dict = {}
 
 
@@ -84,6 +84,11 @@ class Manifests(unittest.TestCase):
         self.assertEqual(kinds["evaluation"].count("Job"), 1)
         self.assertIn("ExternalSecret", kinds["production"])
         self.assertNotIn("ExternalSecret", kinds["minimal"])
+        for kind in ("ServiceMonitor", "PrometheusRule"):
+            self.assertEqual(kinds["monitoring"].count(kind), 1, kind)
+            self.assertNotIn(kind, kinds["minimal"] + kinds["evaluation"] + kinds["production"])
+        self.assertEqual(kinds["monitoring"].count("ConfigMap"), kinds["minimal"].count("ConfigMap") + 1)  # the dashboard
+        self.assertEqual(kinds["monitoring"].count("NetworkPolicy"), kinds["minimal"].count("NetworkPolicy") + 1)  # from-prometheus
 
     def test_no_secret_object_and_no_secret_literals(self):
         for case in CASES:

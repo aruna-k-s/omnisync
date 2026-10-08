@@ -1,0 +1,27 @@
+# Everything optional in monitoring switched on, against the smallest legal install.
+tenant: acme
+hosts: { api: api.acme.test, gateway: sync.acme.test, console: console.acme.test, app: app.acme.test }
+adminEmails: [admin@acme.test]
+oidc: { issuer: "https://idp.acme.test", clientId: omnisync }
+publicKeys:
+  issuer: "1111111111111111111111111111111111111111111111111111111111111111"
+  ledger: "2222222222222222222222222222222222222222222222222222222222222222"
+storage:
+  checkpoint: { retainDays: 365 }
+networkPolicy:
+  egress:
+    postgresql: { cidrs: ["10.20.0.0/24"] }
+    s3: { cidrs: ["10.30.0.0/24"] }
+monitoring:
+  enabled: true
+  scrape:
+    namespaceLabels: { kubernetes.io/metadata.name: monitoring }
+    podLabels: { app.kubernetes.io/name: prometheus }
+  serviceMonitor: { enabled: true, interval: 30s, labels: { release: prometheus } }
+  prometheusRule: { enabled: true, labels: { release: prometheus } }
+  dashboard: { enabled: true }
+  tracing:
+    enabled: true
+    endpoint: "https://otel.acme.test:4318"
+    sampleRatio: 0.05
+    egress: { cidrs: ["10.40.0.0/24"], port: 4318 }

@@ -109,6 +109,14 @@ spec:
         - { protocol: TCP, port: {{ $np.egress.s3.port }} }
     {{- end }}
     {{- end }}
+    {{- if and .Values.monitoring.enabled .Values.monitoring.tracing.enabled }}
+    {{- range .Values.monitoring.tracing.egress.cidrs }}
+    - to:
+        - ipBlock: { cidr: {{ . | quote }} }
+      ports:
+        - { protocol: TCP, port: {{ $.Values.monitoring.tracing.egress.port }} }
+    {{- end }}
+    {{- end }}
 ---
 # control plane -> PostgreSQL and the identity provider
 apiVersion: networking.k8s.io/v1
@@ -222,5 +230,37 @@ spec:
               app.kubernetes.io/component: minio
       ports:
         - { protocol: TCP, port: 9000 }
+{{- end }}
+{{- if .Values.monitoring.enabled }}
+---
+# Prometheus -> the metrics port of the gateway and the control plane, and nothing else of theirs
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $f }}-from-prometheus
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [gateway, control-plane]
+      - key: app.kubernetes.io/instance
+        operator: In
+        values: [{{ .Release.Name | quote }}]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.monitoring.scrape.namespaceLabels | nindent 14 }}
+          {{- with .Values.monitoring.scrape.podLabels }}
+          podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.monitoring.port }} }
 {{- end }}
 {{- end }}

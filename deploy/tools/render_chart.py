@@ -580,6 +580,13 @@ class Renderer:
                 args.append(piped)
             return self._call(head[1], args, dot, root, sc)
         if len(terms) > 1 or piped is not _NOVAL:
+            # a method on a value, such as `.Files.Get "path"`
+            fn = self._term(head, dot, root, sc) if head[0] == "path" else None
+            if callable(fn):
+                args = [self._term(t, dot, root, sc) for t in terms[1:]]
+                if piped is not _NOVAL:
+                    args.append(piped)
+                return fn(*args)
             raise TemplateError(f"can't give arguments to non-function {head!r}")
         return self._term(head, dot, root, sc)
 
@@ -815,6 +822,7 @@ def render_chart(chart_dir: str, values_files: list[str] | None = None, sets: li
         "Chart": {"Name": chart["name"], "Version": chart["version"], "AppVersion": chart.get("appVersion", "")},
         "Release": {"Name": release, "Namespace": namespace, "Service": "Helm", "IsInstall": True, "IsUpgrade": False, "Revision": 1},
         "Capabilities": {"KubeVersion": {"Version": "v1.31.0", "Major": "1", "Minor": "31"}},
+        "Files": {"Get": lambda name: _chart_file(chart_dir, name)},
     }
     out: dict[str, str] = {}
     for name, nodes in parsed.items():
@@ -825,6 +833,24 @@ def render_chart(chart_dir: str, values_files: list[str] | None = None, sets: li
         except TemplateError as e:
             raise TemplateError(f"{name}: {e}") from None
     return out
+
+
+# What Helm keeps out of .Files: the templates, the chart's own control files and subcharts.
+_NOT_FILES = ("templates/", "charts/", "Chart.yaml", "Chart.lock", "values.yaml", "values.schema.json", ".helmignore")
+
+
+def _chart_file(chart_dir: str, name: Any) -> str:
+    """`.Files.Get`: the text of a file inside the chart, or "" when there is none (as Helm does). Never reads outside it."""
+    if not isinstance(name, str):
+        raise TemplateError(".Files.Get: the path must be a string")
+    rel = os.path.normpath(name)
+    if any(rel == n.rstrip("/") or rel.startswith(n) for n in _NOT_FILES):
+        return ""
+    path = os.path.join(chart_dir, rel)
+    root = os.path.realpath(chart_dir)
+    if os.path.commonpath([root, os.path.realpath(path)]) != root:  # `..`, an absolute path or a symlink leading out of the chart
+        return ""
+    return open(path, encoding="utf-8").read() if os.path.isfile(path) else ""
 
 
 def manifests(rendered: dict[str, str]) -> list[dict]:

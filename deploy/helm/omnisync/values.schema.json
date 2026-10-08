@@ -536,6 +536,179 @@
         }
       }
     },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65535,
+          "not": {
+            "enum": [
+              8080,
+              8081
+            ]
+          }
+        },
+        "scrape": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "namespaceLabels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "podLabels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "interval": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "prometheusRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "runbookUrl": {
+              "type": "string",
+              "pattern": "^https?://[^\\s{}]+$"
+            },
+            "alerts": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "checkpointAgeSeconds": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 86400
+                },
+                "signatureFailuresPerSecond": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 100000
+                },
+                "ledgerAppendP99Seconds": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 60
+                },
+                "licensedConnections": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 10000000
+                },
+                "connectionsWarnRatio": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1
+                },
+                "postgresReplicaLagSeconds": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 86400
+                },
+                "postgresReplicaLagMetric": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z_][a-zA-Z0-9_]{0,127}$"
+                }
+              }
+            }
+          }
+        },
+        "dashboard": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "tracing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "endpoint": {
+              "type": "string",
+              "pattern": "^$|^https?://[^/@\\s]+(/[^@\\s]*)?$"
+            },
+            "sampleRatio": {
+              "anyOf": [
+                {
+                  "const": 0
+                },
+                {
+                  "type": "number",
+                  "minimum": 0.0001,
+                  "maximum": 1
+                }
+              ]
+            },
+            "egress": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "gateway": {
       "type": "object",
       "additionalProperties": false,
@@ -710,6 +883,90 @@
               "egress": {
                 "properties": {
                   "s3": {
+                    "properties": {
+                      "cidrs": {
+                        "minItems": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "monitoring": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "tracing": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "monitoring"
+        ]
+      },
+      "then": {
+        "properties": {
+          "monitoring": {
+            "properties": {
+              "tracing": {
+                "properties": {
+                  "endpoint": {
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "networkPolicy": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "monitoring": {
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "tracing": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "monitoring": {
+            "properties": {
+              "tracing": {
+                "properties": {
+                  "egress": {
                     "properties": {
                       "cidrs": {
                         "minItems": 1

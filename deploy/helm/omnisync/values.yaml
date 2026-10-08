@@ -32,8 +32,8 @@ engine: yjs                           # yjs | automerge | loro
 # --- secrets ------------------------------------------------------------------------------------------------------
 secrets:
   # Name of a Secret you create (or External Secrets creates). Keys: issuer-key, ledger-key, session-secret,
-  # database-url, oidc-client-secret (optional), s3-access-key-id, s3-secret-access-key, and for the bundled
-  # services minio-root-user, minio-root-password, postgres-password. See docs/specs/deployment.md.
+  # database-url, oidc-client-secret (optional), s3-access-key-id, s3-secret-access-key, otlp-headers (optional, only
+  # with monitoring.tracing), and for the bundled services minio-root-user, minio-root-password, postgres-password. See docs/specs/deployment.md.
   existingSecret: omnisync-secrets
   externalSecret:                     # let the External Secrets Operator create that Secret
     enabled: false
@@ -116,6 +116,45 @@ networkPolicy:
     dns:
       namespaceLabels:
         kubernetes.io/metadata.name: kube-system
+
+# --- monitoring ---------------------------------------------------------------------------------------------------
+# Off by default. When on, the gateway and the control plane serve Prometheus /metrics on their own port (never the
+# application port, never through the ingress) and a network policy admits only the namespace Prometheus runs in.
+# The switches below it only take effect with enabled: true. See docs/operations.md and docs/specs/observability.md.
+monitoring:
+  enabled: false
+  port: 9464                          # 1024-65535, not 8080 or 8081
+  scrape:
+    namespaceLabels:                  # the namespace your Prometheus runs in
+      kubernetes.io/metadata.name: monitoring
+    podLabels: {}                     # optional: only pods in that namespace with these labels may scrape
+  serviceMonitor:                     # Prometheus Operator: one ServiceMonitor for the two services
+    enabled: false
+    interval: 30s
+    labels: {}                        # whatever your Prometheus selects, for example release: kube-prometheus-stack
+  prometheusRule:                     # Prometheus Operator: the alert rules
+    enabled: false
+    labels: {}
+    runbookUrl: https://github.com/omnisync/omnisync/blob/main/docs/operations.md
+    alerts:
+      checkpointAgeSeconds: 900       # critical when the newest covered checkpoint is older than this (default 15 minutes)
+      signatureFailuresPerSecond: 0.2 # warning when updates refused for their signature exceed this rate for 5 minutes
+      ledgerAppendP99Seconds: 0.1     # warning when the 99th percentile of one update-log write exceeds this for 10 minutes
+      licensedConnections: 0          # your contractual connection limit; 0 = no connections alert (OmniSync does not enforce a limit)
+      connectionsWarnRatio: 0.8       # warn above this share of licensedConnections
+      postgresReplicaLagSeconds: 0    # 0 = no replica lag alert; needs a PostgreSQL exporter that publishes the metric below
+      postgresReplicaLagMetric: pg_replication_lag_seconds   # postgres_exporter; CloudNativePG: cnpg_pg_replication_lag
+  dashboard:                          # a ConfigMap with the Grafana dashboard, found by the Grafana sidecar by its label
+    enabled: false
+    labels:
+      grafana_dashboard: "1"
+  tracing:                            # gateway only; sampled spans along one edit, sent to an OTLP/HTTP collector
+    enabled: false
+    endpoint: ""                      # for example https://otel-collector.observability.svc:4318 ; credentials go in the Secret (otlp-headers)
+    sampleRatio: 0.01                 # 0 or 0.0001-1
+    egress:
+      cidrs: []                       # where the collector is; required while networkPolicy.enabled
+      port: 4318
 
 # --- workloads ----------------------------------------------------------------------------------------------------
 gateway:

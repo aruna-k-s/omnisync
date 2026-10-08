@@ -1,6 +1,6 @@
 # Spec: metrics and traces (Phase 1, week 10a)
 
-**Purpose.** An operator should be able to answer "is it healthy, is it keeping up, is the evidence log protected" from a Prometheus scrape, and a developer should be able to follow one edit through the gateway when something is slow. This spec covers the telemetry package, what the gateway and control plane report, the endpoint, and the rules that keep telemetry from becoming a leak or a new way to fail. Dashboards, alert rules and chart wiring are 10b; load numbers are 10c.
+**Purpose.** An operator should be able to answer "is it healthy, is it keeping up, is the evidence log protected" from a Prometheus scrape, and a developer should be able to follow one edit through the gateway when something is slow. This spec covers the telemetry package, what the gateway and control plane report, the endpoint, and the rules that keep telemetry from becoming a leak or a new way to fail. Dashboards, alert rules and chart wiring are 10b (below); load numbers are 10c.
 
 Non-goals: logs (the structured `log` callback stays as is), per-document or per-user metrics, branch metrics (week 11, with branches), a metrics store, an OpenTelemetry Collector.
 
@@ -93,6 +93,14 @@ Passive additions only; control flow is unchanged. `apps/gateway/src/gateway.ts`
 ## Mutation checks (10a)
 
 About 110 mutations of the telemetry package, the gateway, room, checkpoint writer and control-plane hook; the first run left 31 alive, each closed by a test (negative, NaN and zero durations, repeated `observe`, a rejection bucket named `busy`, the claimed-time and store-error groupings, login and certificate routes by method and status, 429 only, informational statuses, span end-once rules, stage names from the closed set, credentials in the OTLP URL, the degraded gauge and its recovery, duplicate outcome, verify ending before append, in-flight queue depth, clock stepping backwards, upload conflict outcome, seconds not milliseconds). Three remain by design and are equivalent: the sample-ratio regex and its range check each make the other redundant, and `true` as the traces switch is already refused by the check before it.
+
+## Dashboards, alerts and chart wiring (10b)
+
+Specified in `deployment.md` (Monitoring) and used by `operations.md`. The metric tables above are the catalogue both sides are held to: `deploy/tests` parses these tables and requires every dashboard query and alert expression to use only listed metrics and labels (`rate()` only on counters, `histogram_quantile()` only on rated buckets that keep `le`), and `packages/telemetry/test/catalogue.test.ts` requires a real scrape to expose exactly these names, types, label names, listed label values and bucket boundaries. Editing a table without the code, or the code without the table, fails a test.
+
+## Mutation checks (10b)
+
+About 90 mutations of the chart templates, schema, defaults, renderer and dashboard generator (dashboard mutations regenerate the committed file first, so the staleness test cannot be what kills them). The first run left 13 alive, each closed by a test: alert `for` durations and look-back windows, `max` over the checkpoint age, the replica lag threshold (the test used the default), trace egress while tracing is off and a non-default collector port, the default sample ratio, the schema's lower ratio bound, panel thresholds equal to the chart's alert defaults, stat panels reading what their titles say, and the 99th percentile on the latency panels. One mutation is equivalent and was removed with the code it exercised: the `..` / absolute-path check in `.Files.Get`, redundant with the resolved-path containment check.
 
 ## Known limits
 

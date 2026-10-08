@@ -22,6 +22,12 @@ spec:
       port: 8081
       targetPort: http
       protocol: TCP
+    {{- if .Values.monitoring.enabled }}
+    - name: metrics
+      port: {{ .Values.monitoring.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "omnisync.selectorLabels" $ctx | nindent 4 }}
 ---
@@ -61,6 +67,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - { name: http, containerPort: 8081, protocol: TCP }
+            {{- if .Values.monitoring.enabled }}
+            - { name: metrics, containerPort: {{ .Values.monitoring.port }}, protocol: TCP }
+            {{- end }}
           env:
             - { name: PORT, value: "8081" }
             - { name: OMNISYNC_OIDC_ISSUER, value: {{ .Values.oidc.issuer | quote }} }
@@ -78,6 +87,10 @@ spec:
             {{- include "omnisync.secretEnv" (dict "env" "DATABASE_URL" "secret" $secret "key" "database-url" "optional" false) | nindent 12 }}
             {{- include "omnisync.secretEnv" (dict "env" "OMNISYNC_SESSION_SECRET" "secret" $secret "key" "session-secret" "optional" false) | nindent 12 }}
             {{- include "omnisync.secretEnv" (dict "env" "OMNISYNC_OIDC_CLIENT_SECRET" "secret" $secret "key" "oidc-client-secret" "optional" true) | nindent 12 }}
+            {{- if .Values.monitoring.enabled }}
+            - { name: OMNISYNC_METRICS_PORT, value: {{ .Values.monitoring.port | quote }} }
+            - { name: OMNISYNC_METRICS_HOST, value: "0.0.0.0" }
+            {{- end }}
             {{- with .Values.controlPlane.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

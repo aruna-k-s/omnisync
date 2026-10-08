@@ -2,10 +2,11 @@
 a behaviour Go's text/template and Helm's functions are known to have, written down so the preflight cannot drift."""
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
-from render_chart import TemplateError, Renderer  # noqa: E402
+from render_chart import TemplateError, Renderer, _chart_file  # noqa: E402
 
 
 def render(src, values=None, helpers="", **extra):
@@ -160,6 +161,61 @@ class Named(unittest.TestCase):
     def test_missing_template_is_an_error(self):
         with self.assertRaises(TemplateError):
             render('{{ include "nope" . }}')
+
+
+class Files(unittest.TestCase):
+    """`.Files.Get` reads a file inside the chart as Helm does: "" when absent, never templates or control files, never outside."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.chart = os.path.join(self.tmp.name, "chart")
+        for rel, text in {
+            "files/a.json": '{"a": 1}\n',
+            "files/sub/b.txt": "b",
+            "templates/t.yaml": "secret template",
+            "Chart.yaml": "name: x",
+            "values.yaml": "k: v",
+            "values.schema.json": "{}",
+            ".helmignore": "x",
+            "charts/dep/Chart.yaml": "name: dep",
+        }.items():
+            path = os.path.join(self.chart, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").write(text)
+        with open(os.path.join(self.tmp.name, "outside.txt"), "w") as f:
+            f.write("outside")
+
+    def test_reads_a_file_in_the_chart(self):
+        self.assertEqual(_chart_file(self.chart, "files/a.json"), '{"a": 1}\n')
+        self.assertEqual(_chart_file(self.chart, "files/sub/b.txt"), "b")
+        self.assertEqual(_chart_file(self.chart, "./files/../files/a.json"), '{"a": 1}\n')
+
+    def test_a_missing_file_is_empty_not_an_error(self):
+        self.assertEqual(_chart_file(self.chart, "files/none.json"), "")
+        self.assertEqual(_chart_file(self.chart, "files"), "")
+
+    def test_what_helm_withholds_is_withheld(self):
+        for name in ("templates/t.yaml", "Chart.yaml", "values.yaml", "values.schema.json", ".helmignore", "charts/dep/Chart.yaml", "files/../templates/t.yaml"):
+            self.assertEqual(_chart_file(self.chart, name), "", name)
+
+    def test_nothing_outside_the_chart_is_readable(self):
+        for name in ("../outside.txt", "files/../../outside.txt", os.path.join(self.tmp.name, "outside.txt"), "/etc/passwd"):
+            self.assertEqual(_chart_file(self.chart, name), "", name)
+
+    def test_a_symlink_out_of_the_chart_is_not_followed(self):
+        os.symlink(os.path.join(self.tmp.name, "outside.txt"), os.path.join(self.chart, "files", "link.txt"))
+        self.assertEqual(_chart_file(self.chart, "files/link.txt"), "")
+
+    def test_the_path_must_be_a_string(self):
+        with self.assertRaises(TemplateError):
+            _chart_file(self.chart, 5)
+
+    def test_callable_from_a_template_and_piped(self):
+        files = {"Get": lambda n: _chart_file(self.chart, n)}
+        self.assertEqual(render('{{ .Files.Get "files/sub/b.txt" | upper }}', Files=files), "B")
+        self.assertEqual(render('[{{ .Files.Get "files/none" }}]', Files=files), "[]")
+        self.assertEqual(render('k:{{ .Files.Get "files/a.json" | trim | nindent 2 }}', Files=files), 'k:\n  {"a": 1}')
 
 
 if __name__ == "__main__":
