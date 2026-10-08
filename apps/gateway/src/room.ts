@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { WebSocket } from "ws";
 import type { EngineDoc, SyncEngine } from "@omnisync/engine";
 import { decodeFrame, type Frame } from "@omnisync/protocol";
+import type { GatewayMetrics } from "@omnisync/telemetry";
 import {
   StoreUnavailableError,
   snapshotObjectKey,
@@ -60,6 +61,8 @@ export interface RoomDeps {
   readonly log: Log;
   /** Called with true after a store failure and false after the next success. */
   readonly onStoreHealth: (ok: boolean) => void;
+  /** Observer only (spec: docs/specs/observability.md): times the store call; never changes what happens. */
+  readonly metrics?: GatewayMetrics;
 }
 
 /**
@@ -81,12 +84,18 @@ export class Room {
   #pending: Submission[] = [];
   #lastReceivedAtMs = 0;
   #draining = false;
+  #inFlight = 0;
   #compacting: Promise<void> | undefined;
   #compactNotBefore = 0;
   #destroyed = false;
 
   constructor(private readonly d: RoomDeps) {
     this.ready = this.#load();
+  }
+
+  /** Verified updates not yet answered: waiting for the store plus the batch being written. For the queue-depth gauge. */
+  get pendingCount(): number {
+    return this.#pending.length + this.#inFlight;
   }
 
   get busy(): boolean {
@@ -156,7 +165,12 @@ export class Room {
     try {
       while (this.#pending.length > 0 && !this.#destroyed) {
         const batch = this.#pending.splice(0, this.d.config.maxBatch);
-        await this.#commit(batch);
+        this.#inFlight = batch.length;
+        try {
+          await this.#commit(batch);
+        } finally {
+          this.#inFlight = 0;
+        }
       }
     } finally {
       this.#draining = false;
@@ -168,12 +182,14 @@ export class Room {
     const { store, docId, stats } = this.d;
     const stamps = new Map<Submission, number>();
     let results;
+    let startedAt = performance.now();
     try {
       // Arrival times, made non-decreasing along the chain: two connections' frames can reach this room out of clock order.
       for (const s of batch) {
         this.#lastReceivedAtMs = Math.max(this.#lastReceivedAtMs, s.receivedAtMs);
         stamps.set(s, this.#lastReceivedAtMs);
       }
+      startedAt = performance.now();
       results = await store.appendUpdates(
         docId,
         batch.map((s) => ({
@@ -186,8 +202,10 @@ export class Room {
           ...(s.certSerial ? { certSerial: s.certSerial } : {}),
         })),
       );
+      this.d.metrics?.ledgerAppend((performance.now() - startedAt) / 1000, "ok");
       this.d.onStoreHealth(true);
     } catch (e) {
+      this.d.metrics?.ledgerAppend((performance.now() - startedAt) / 1000, "error");
       this.d.onStoreHealth(false);
       this.d.log("append_failed", { docId, batch: batch.length, error: (e as Error).message });
       const reason = e instanceof StoreUnavailableError ? "unavailable" : "internal";

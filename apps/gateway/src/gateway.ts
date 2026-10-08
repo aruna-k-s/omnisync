@@ -22,6 +22,7 @@ import {
   type ObjectStore,
   type Role,
 } from "@omnisync/store";
+import type { GatewayMetrics, Tracing } from "@omnisync/telemetry";
 import { Room, type Log, type RoomStats } from "./room.js";
 
 /**
@@ -111,6 +112,9 @@ export interface GatewayOptions {
   heartbeatMs?: number;
   /** Structured events. Never receives keys or document content. */
   log?: Log;
+  /** Metrics and traces (spec: docs/specs/observability.md). Observers only: they never change what the gateway does. */
+  metrics?: GatewayMetrics;
+  tracing?: Tracing;
 }
 
 export interface GatewayStats extends RoomStats {
@@ -126,7 +130,7 @@ export interface GatewayStats extends RoomStats {
   degraded: boolean;
 }
 
-type Resolved = Required<Omit<GatewayOptions, "store" | "objects" | "log" | "engine" | "port" | "host" | "resolveKey" | "auth">>;
+type Resolved = Required<Omit<GatewayOptions, "store" | "objects" | "log" | "engine" | "port" | "host" | "resolveKey" | "auth" | "metrics" | "tracing">>;
 
 type Mode = "full" | "upload_only";
 interface Conn {
@@ -172,6 +176,8 @@ export class Gateway {
   readonly #port: number;
   readonly #o: Resolved;
   readonly #log: Log;
+  readonly #metrics: GatewayMetrics | undefined;
+  readonly #tracing: Tracing | undefined;
   readonly #auth: ResolvedAuth | undefined;
   readonly #resolveKey: KeyResolver | undefined;
   readonly #conns = new Map<WebSocket, Conn>();
@@ -213,6 +219,8 @@ export class Gateway {
     this.#host = opts.host ?? "127.0.0.1";
     this.#port = opts.port ?? 0;
     this.#log = opts.log ?? (() => {});
+    this.#metrics = opts.metrics;
+    this.#tracing = opts.tracing;
     if ((opts.resolveKey === undefined) === (opts.auth === undefined)) {
       throw new Error("configure exactly one of `auth` (certificates) or `resolveKey` (static keys)");
     }
@@ -248,6 +256,17 @@ export class Gateway {
       sweepMs: opts.sweepMs ?? 1000,
       heartbeatMs: opts.heartbeatMs ?? 30_000,
     };
+    this.#metrics?.observe({
+      connections: () => this.#connections,
+      documents: () => this.#rooms.size,
+      appendQueueDepth: () => {
+        let n = 0;
+        for (const room of this.#rooms.values()) n += room.pendingCount;
+        return n;
+      },
+      degraded: () => this.#degraded,
+      stats: () => this.#stats,
+    });
   }
 
   get stats(): GatewayStats {
@@ -378,6 +397,7 @@ export class Gateway {
         },
         stats: this.#stats,
         log: this.#log,
+        ...(this.#metrics ? { metrics: this.#metrics } : {}),
         onStoreHealth: (ok) => {
           this.#degraded = !ok;
         },
@@ -728,39 +748,59 @@ export class Gateway {
     const { ws } = conn;
     const auth = this.#auth;
     const cert = conn.cert;
+    // Observers only: timings and spans never change a decision below (spec: docs/specs/observability.md).
+    const startedAt = performance.now();
+    const trace = this.#tracing?.edit(bytes.length);
+    const endVerify = trace?.stage("verify");
+    const refuse = (reason: string, at: number | undefined): void => {
+      endVerify?.();
+      this.#metrics?.updateFinished((performance.now() - startedAt) / 1000, "rejected");
+      trace?.end(reason, reason === "unavailable" || reason === "internal");
+      if (at === undefined) this.#reject(ws, reason);
+      else this.#reject(ws, reason, at);
+    };
     // The ledger records when the gateway received this edit, not when its group commit finished: a queue must not push
     // an edit past its certificate's grace window.
     const receivedAtMs = auth?.now() ?? Date.now();
     if (auth && cert) {
-      if (!roleAtLeast(conn.role, "write")) return this.#reject(ws, "forbidden", seq);
+      if (!roleAtLeast(conn.role, "write")) return refuse("forbidden", seq);
     }
     const resolve: KeyResolver = cert
       ? (keyId) => (keyIdMatches(keyId, cert.publicKey) ? cert.publicKey : undefined)
       : (this.#resolveKey as KeyResolver);
     const result = verifyUpdate(bytes, conn.docId, resolve, { maxPayloadBytes: this.#o.maxPayloadBytes });
-    if (!result.ok) return this.#reject(ws, result.reason);
+    if (!result.ok) return refuse(result.reason, undefined);
     const { frame } = result;
     if (auth && cert) {
       // The signer asserts when the edit was made. It must fall inside the certificate's life and not be from the future.
       const now = receivedAtMs;
       const t = frame.claimedAtMs;
-      if (t < cert.notBeforeMs) return this.#reject(ws, "claimed_before_validity", frame.seq);
-      if (t > cert.notAfterMs) return this.#reject(ws, "claimed_after_expiry", frame.seq);
-      if (t > now + auth.maxClockSkewMs) return this.#reject(ws, "claimed_in_future", frame.seq);
+      if (t < cert.notBeforeMs) return refuse("claimed_before_validity", frame.seq);
+      if (t > cert.notAfterMs) return refuse("claimed_after_expiry", frame.seq);
+      if (t > now + auth.maxClockSkewMs) return refuse("claimed_in_future", frame.seq);
     }
+    endVerify?.();
+    const endAppend = trace?.stage("append");
     room.submit({
       frame,
       bytes,
       receivedAtMs,
       ...(cert ? { certSerial: cert.serial } : {}),
       accepted: (_seq, fresh) => {
+        endAppend?.();
         if (fresh) {
           this.#stats.accepted++;
+          const fanoutStartedAt = performance.now();
+          const endFanout = trace?.stage("fanout");
           this.#relay(room, ws, bytes);
+          endFanout?.();
+          this.#metrics?.fanout((performance.now() - fanoutStartedAt) / 1000);
         }
         send(ws, { type: FrameType.ACK, flags: 0, sessionId: frame.sessionId, seq: frame.seq, payload: new Uint8Array() });
+        this.#metrics?.updateFinished((performance.now() - startedAt) / 1000, "ok");
+        trace?.end(fresh ? "ok" : "duplicate");
       },
-      rejected: (reason) => this.#reject(ws, reason, frame.seq),
+      rejected: (reason) => refuse(reason, frame.seq),
     });
   }
 

@@ -3,7 +3,7 @@ import { generateKeyPair, type KeyPair } from "@omnisync/protocol";
 import { signEnrollmentProof, signerFromKeyPair, trustAnchors } from "@omnisync/crypto";
 import { MemoryIdentityStore, type IdentityStore } from "@omnisync/store";
 import { FaultyIdentityStore } from "@omnisync/store/testing";
-import { createControlPlane, type ControlPlaneConfig } from "../src/index.js";
+import { createControlPlane, type ControlPlaneConfig, type ControlPlaneDeps } from "../src/index.js";
 import { FakeIdp, type FakeUser } from "./fake-idp.js";
 
 export const T0 = 1_800_000_000_000;
@@ -45,6 +45,7 @@ export async function startPlane(
   over: Partial<ControlPlaneConfig> = {},
   identity: IdentityStore = new MemoryIdentityStore(),
   clock = new Clock(),
+  deps: Partial<Omit<ControlPlaneDeps, "identity">> = {},
 ): Promise<Plane> {
   const idp = await new FakeIdp("omnisync-test").start();
   const faulty = new FaultyIdentityStore(identity);
@@ -58,7 +59,7 @@ export async function startPlane(
       now: clock.now,
       ...over,
     },
-    { identity: faulty },
+    { identity: faulty, ...deps },
   );
   const call: Plane["call"] = (token, method, url, payload) =>
     app.inject({ method, url, ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}), ...(payload !== undefined ? { payload: payload as object } : {}) });

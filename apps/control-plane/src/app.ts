@@ -3,6 +3,7 @@ import { Module, type DynamicModule } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import type { IdentityStore } from "@omnisync/store";
+import type { ControlPlaneMetrics } from "@omnisync/telemetry";
 import { resolveConfig, type ControlPlaneConfig, type ResolvedConfig } from "./config.js";
 import { AdminController, AdminGuard } from "./admin.js";
 import { DeviceController } from "./device.js";
@@ -33,6 +34,8 @@ export interface ControlPlaneDeps {
   identity: IdentityStore;
   /** Defaults to a real OpenID Connect login against `config.oidc`. */
   oidc?: OidcLogin;
+  /** Observer only (spec: docs/specs/observability.md): derived from the route template and status, never the URL. */
+  metrics?: ControlPlaneMetrics;
 }
 
 /** Builds the HTTP application. Call `.listen(port)` or use `.inject()` in tests. */
@@ -64,6 +67,12 @@ export async function createControlPlane(config: ControlPlaneConfig, deps: Contr
         return reply;
       }
       return;
+    });
+  }
+  const metrics = deps.metrics;
+  if (metrics) {
+    fastify.addHook("onResponse", async (req, reply) => {
+      metrics.request({ route: req.routeOptions?.url, method: req.method, status: reply.statusCode, seconds: reply.elapsedTime / 1000 });
     });
   }
   await app.init();

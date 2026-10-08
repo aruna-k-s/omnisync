@@ -3,6 +3,7 @@ import { generateKeyPair, hexToBytes } from "@omnisync/protocol";
 import { signerFromKeyPair } from "@omnisync/crypto";
 import { MemoryIdentityStore, PgDocumentStore, PgIdentityStore, migrate, type IdentityStore } from "@omnisync/store";
 import { exportLedger } from "@omnisync/gateway";
+import { ControlPlaneMetrics, parseTelemetryConfig, setupTelemetry } from "@omnisync/telemetry";
 import { createControlPlane } from "./app.js";
 import { parseTrustProxy, type LedgerAdminConfig } from "./config.js";
 
@@ -21,6 +22,8 @@ import { parseTrustProxy, type LedgerAdminConfig } from "./config.js";
  *                              ingress: otherwise every client shares the ingress controller's rate-limit bucket. Default: none
  *   OMNISYNC_TENANT, OMNISYNC_LEDGER_PUBLIC_KEY (hex)
  *                              with DATABASE_URL: enable the admin API's ledger routes (trust keys and export)
+ *   OMNISYNC_METRICS_PORT / OMNISYNC_METRICS_HOST
+ *                              serve Prometheus /metrics on its own port (never PORT); host defaults to 127.0.0.1
  */
 function need(name: string): string {
   const v = process.env[name];
@@ -28,6 +31,9 @@ function need(name: string): string {
   return v;
 }
 
+const port = Number(process.env["PORT"] ?? 8081);
+// Checked with the other settings, before anything listens.
+const telemetryConfig = parseTelemetryConfig(process.env, { appPort: port });
 const issuerKey = generateKeyPair(hexToBytes(readFileSync(need("OMNISYNC_ISSUER_KEY_FILE"), "utf8").trim()));
 let identity: IdentityStore = new MemoryIdentityStore();
 let ledger: LedgerAdminConfig | undefined;
@@ -47,6 +53,10 @@ if (dbUrl) {
   console.warn("DATABASE_URL not set: identity data is in memory and will be lost on restart");
 }
 
+const telemetry = await setupTelemetry(telemetryConfig, {
+  service: "omnisync-control-plane",
+  log: (event, fields) => console.warn(JSON.stringify({ event, ...fields })),
+});
 const clientSecret = process.env["OMNISYNC_OIDC_CLIENT_SECRET"];
 const deviceVerificationUrl = process.env["OMNISYNC_DEVICE_VERIFICATION_URL"];
 const app = await createControlPlane(
@@ -65,8 +75,7 @@ const app = await createControlPlane(
     ...(deviceVerificationUrl ? { deviceLogin: { verificationUrl: deviceVerificationUrl } } : {}),
     ...(ledger ? { ledger } : {}),
   },
-  { identity },
+  { identity, metrics: new ControlPlaneMetrics(telemetry.meter) },
 );
-const port = Number(process.env["PORT"] ?? 8081);
 await app.listen(port, "0.0.0.0");
 console.warn(`control plane listening on :${port}; trust anchor (issuer public key): ${Buffer.from(issuerKey.publicKey).toString("hex")}`);

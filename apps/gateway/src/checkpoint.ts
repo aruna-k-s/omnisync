@@ -10,6 +10,7 @@ import {
 } from "@omnisync/crypto";
 import { byIdBytes, type LedgerStore, type ObjectStore } from "@omnisync/store";
 import { keyIdOf } from "@omnisync/protocol";
+import type { Tracing } from "@omnisync/telemetry";
 import type { Log } from "./room.js";
 
 /**
@@ -37,6 +38,8 @@ export interface CheckpointWriterOptions {
   readonly signTimeoutMs?: number;
   readonly now?: () => number;
   readonly log?: Log;
+  /** Observer only (spec: docs/specs/observability.md): one span per checkpoint written. */
+  readonly tracing?: Tracing;
 }
 
 export interface CheckpointStats {
@@ -51,11 +54,17 @@ export interface CheckpointStats {
   uploadConflicts: number;
   /** Receive-time ms of the newest checkpoint this process saw uploaded; 0 if none. */
   lastUploadedAtMs: number;
+  /**
+   * The last time a pass found nothing pending and nothing waiting for upload, or finished writing and uploading
+   * everything it found; construction time until then. `behindMs()` is how long ago that was.
+   */
+  lastCaughtUpAtMs: number;
 }
 
 export class CheckpointWriter {
-  readonly stats: CheckpointStats = { written: 0, uploaded: 0, conflicts: 0, signFailures: 0, storeFailures: 0, uploadFailures: 0, uploadConflicts: 0, lastUploadedAtMs: 0 };
-  readonly #o: Required<Omit<CheckpointWriterOptions, "log">> & { log: Log };
+  readonly stats: CheckpointStats = { written: 0, uploaded: 0, conflicts: 0, signFailures: 0, storeFailures: 0, uploadFailures: 0, uploadConflicts: 0, lastUploadedAtMs: 0, lastCaughtUpAtMs: 0 };
+  readonly #o: Required<Omit<CheckpointWriterOptions, "log" | "tracing">> & { log: Log };
+  readonly #tracing: Tracing | undefined;
   #timer: NodeJS.Timeout | undefined;
   #running: Promise<void> | undefined;
   #lastRunAt: number;
@@ -71,7 +80,8 @@ export class CheckpointWriter {
       now: Date.now,
       log: () => {},
       ...o,
-    } as Required<Omit<CheckpointWriterOptions, "log">> & { log: Log };
+    } as Required<Omit<CheckpointWriterOptions, "log" | "tracing">> & { log: Log };
+    this.#tracing = o.tracing;
     const cfg = this.#o;
     const positive = (name: string, v: number, max = Number.MAX_SAFE_INTEGER): void => {
       if (!Number.isSafeInteger(v) || v < 1 || v > max) throw new RangeError(`${name} must be an integer between 1 and ${max}`);
@@ -90,6 +100,12 @@ export class CheckpointWriter {
       throw new RangeError("signer key id must be the id of its 32-byte public key");
     }
     this.#lastRunAt = this.#o.now();
+    this.stats.lastCaughtUpAtMs = this.#lastRunAt;
+  }
+
+  /** Milliseconds since everything acknowledged was last known to be covered by an uploaded checkpoint. */
+  behindMs(): number {
+    return Math.max(0, this.#o.now() - this.stats.lastCaughtUpAtMs);
   }
 
   start(): void {
@@ -114,7 +130,7 @@ export class CheckpointWriter {
         const pending = await this.#o.store.pendingEntries();
         const due = this.#o.now() - this.#lastRunAt >= this.#o.intervalMs;
         if (pending >= this.#o.maxEntries || (pending > 0 && due)) await this.#writeAll();
-        else await this.#healUploads();
+        else if ((await this.#healUploads()) && pending === 0) this.stats.lastCaughtUpAtMs = this.#o.now();
         if (pending === 0 && due) this.#lastRunAt = this.#o.now();
       } catch (e) {
         this.#storeFailure(e);
@@ -145,40 +161,60 @@ export class CheckpointWriter {
     for (;;) {
       const heads = (await this.#o.store.pendingHeads(this.#o.maxDocs)).sort((a, b) => byIdBytes(a.documentId, b.documentId));
       if (heads.length === 0) break;
-      const last = await this.#o.store.lastCheckpoint();
-      const n = (last?.n ?? 0) + 1;
-      const prevHash = last?.hash ?? ZERO_HASH;
-      // Checkpoint times never go backwards, even if the clock does.
-      const createdAtMs = Math.max(this.#o.now(), last?.createdAtMs ?? 0);
-      let bytes: Uint8Array;
+      const span = this.#tracing?.checkpoint();
+      // Unless this pass reaches the end, it failed the way a store call fails; the paths below say otherwise where it did not.
+      let outcome = "unavailable";
+      let fault = true;
       try {
-        bytes = await withTimeout(
-          Promise.resolve().then(() => signCheckpoint({ n, createdAtMs, prevCheckpointHash: prevHash, tenant: this.#o.tenant, heads }, this.#o.signer)),
-          this.#o.signTimeoutMs,
-          "checkpoint signing",
-        );
-        // Never reserve a number for bytes we have not checked ourselves: a broken signer would burn n for good.
-        const own = verifyCheckpoint(bytes, () => this.#o.signer.publicKey);
-        if (!own.ok) throw new Error(`signer produced a checkpoint that does not verify (${own.reason})`);
-      } catch (e) {
-        this.stats.signFailures++;
-        this.#o.log("checkpoint_sign_failed", { n, error: (e as Error).message });
-        return;
+        const last = await this.#o.store.lastCheckpoint();
+        const n = (last?.n ?? 0) + 1;
+        span?.set({ n, documents: heads.length });
+        const prevHash = last?.hash ?? ZERO_HASH;
+        // Checkpoint times never go backwards, even if the clock does.
+        const createdAtMs = Math.max(this.#o.now(), last?.createdAtMs ?? 0);
+        let bytes: Uint8Array;
+        try {
+          bytes = await withTimeout(
+            Promise.resolve().then(() => signCheckpoint({ n, createdAtMs, prevCheckpointHash: prevHash, tenant: this.#o.tenant, heads }, this.#o.signer)),
+            this.#o.signTimeoutMs,
+            "checkpoint signing",
+          );
+          // Never reserve a number for bytes we have not checked ourselves: a broken signer would burn n for good.
+          const own = verifyCheckpoint(bytes, () => this.#o.signer.publicKey);
+          if (!own.ok) throw new Error(`signer produced a checkpoint that does not verify (${own.reason})`);
+        } catch (e) {
+          this.stats.signFailures++;
+          this.#o.log("checkpoint_sign_failed", { n, error: (e as Error).message });
+          outcome = "internal";
+          return;
+        }
+        const hash = checkpointHash(bytes);
+        const reserved = await this.#o.store.reserveCheckpoint({ n, createdAtMs, prevHash, hash, bytes, heads });
+        if (!reserved) {
+          // Another writer took n. Re-read and try again, a few times.
+          this.stats.conflicts++;
+          outcome = "conflict";
+          fault = false;
+          if (++conflicts >= 3) return;
+          continue;
+        }
+        this.stats.written++;
+        this.#lastRunAt = this.#o.now();
+        this.#o.log("checkpoint_reserved", { n, documents: heads.length });
+        const conflictsBefore = this.stats.uploadConflicts;
+        if (!(await this.#upload(n, bytes))) {
+          if (this.stats.uploadConflicts > conflictsBefore) outcome = "conflict";
+          return; // leave it reserved; the next tick retries the same bytes
+        }
+        outcome = "ok";
+        fault = false;
+        if (heads.length < this.#o.maxDocs) break;
+      } finally {
+        span?.end(outcome, fault);
       }
-      const hash = checkpointHash(bytes);
-      const reserved = await this.#o.store.reserveCheckpoint({ n, createdAtMs, prevHash, hash, bytes, heads });
-      if (!reserved) {
-        // Another writer took n. Re-read and try again, a few times.
-        this.stats.conflicts++;
-        if (++conflicts >= 3) return;
-        continue;
-      }
-      this.stats.written++;
-      this.#lastRunAt = this.#o.now();
-      this.#o.log("checkpoint_reserved", { n, documents: heads.length });
-      if (!(await this.#upload(n, bytes))) return; // leave it reserved; the next tick retries the same bytes
-      if (heads.length < this.#o.maxDocs) break;
     }
+    // Only reachable when the last pass found nothing left, or wrote and uploaded the final batch.
+    this.stats.lastCaughtUpAtMs = this.#o.now();
   }
 
   /** True when nothing reserved is left waiting for its upload. */

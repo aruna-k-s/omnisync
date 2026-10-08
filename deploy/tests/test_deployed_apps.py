@@ -272,6 +272,80 @@ class Deployed(unittest.TestCase):
         out = self.refused(p)
         self.assertRegex(out, r"TRUST_PROXY")
 
+    # ---- metrics and traces (docs/specs/observability.md) -----------------------------------------------------------
+    def test_gateway_serves_metrics_on_its_own_port_only(self):
+        port, mport = free_port(), free_port()
+        p, status = self.run_until("gateway", "dist/serve.js", self.gateway_env(port, OMNISYNC_METRICS_PORT=str(mport), OMNISYNC_METRICS_HOST="127.0.0.1"),
+                                   f"http://127.0.0.1:{port}/readyz")
+        try:
+            self.assertEqual(status, 200, "gateway never became ready")
+            code, text = get(f"http://127.0.0.1:{mport}/metrics")
+            self.assertEqual(code, 200)
+            for name in ("omnisync_connections_active", "omnisync_documents_active", "omnisync_append_queue_depth", "omnisync_store_degraded",
+                         "omnisync_checkpoint_age_seconds", "omnisync_admission_rejections_total", "omnisync_checkpoint_failures_total"):
+                self.assertIn(name, text)
+            self.assertIn('service_name="omnisync-gateway"', text)
+            self.assertEqual(get(f"http://127.0.0.1:{port}/metrics")[0], 404, "/metrics must never be served on the application port")
+            self.assertEqual(get(f"http://127.0.0.1:{mport}/healthz")[0], 404)
+            for secret in (self.ledger_seed, self.issuer_seed, self.db_url, "password"):
+                self.assertNotIn(secret, text)
+        finally:
+            out = self.stop(p)
+        self.assertEqual(p.returncode, 0, out)
+
+    def test_gateway_has_no_metrics_listener_unless_asked(self):
+        port, mport = free_port(), free_port()
+        p, status = self.run_until("gateway", "dist/serve.js", self.gateway_env(port), f"http://127.0.0.1:{port}/readyz")
+        try:
+            self.assertEqual(status, 200)
+            self.assertIsNone(get(f"http://127.0.0.1:{mport}/metrics")[0])
+            self.assertEqual(get(f"http://127.0.0.1:{port}/metrics")[0], 404)
+        finally:
+            self.stop(p)
+
+    def test_gateway_refuses_metrics_on_the_application_port(self):
+        port = free_port()
+        p, _ = self.run_until("gateway", "dist/serve.js", self.gateway_env(port, OMNISYNC_METRICS_PORT=str(port)), None, timeout=15)
+        self.assertRegex(self.refused(p), r"OMNISYNC_METRICS_PORT")
+
+    def test_gateway_refuses_traces_without_an_endpoint_and_an_unclear_switch(self):
+        for over, var in (({"OMNISYNC_TRACES_ENABLED": "1"}, "OTEL_EXPORTER_OTLP_ENDPOINT"), ({"OMNISYNC_TRACES_ENABLED": "true"}, "OMNISYNC_TRACES_ENABLED")):
+            p, _ = self.run_until("gateway", "dist/serve.js", self.gateway_env(free_port(), **over), None, timeout=15)
+            self.assertRegex(self.refused(p), var)
+
+    def test_control_plane_serves_metrics_on_its_own_port_only(self):
+        port, mport = free_port(), free_port()
+        env = self.env(
+            PORT=str(port),
+            OMNISYNC_METRICS_PORT=str(mport),
+            OMNISYNC_ISSUER_KEY_FILE=os.path.join(self.key_dir, "issuer-key"),
+            OMNISYNC_SESSION_SECRET=secrets.token_hex(32),
+            OMNISYNC_OIDC_ISSUER="http://127.0.0.1:9",
+            OMNISYNC_OIDC_CLIENT_ID="omnisync",
+            OMNISYNC_OIDC_REDIRECT_URI="https://api.acme.test/v1/auth/callback",
+        )
+        p, status = self.run_until("control-plane", "dist/main.js", env, f"http://127.0.0.1:{port}/healthz")
+        try:
+            self.assertEqual(status, 200, "control plane never answered /healthz")
+            get(f"http://127.0.0.1:{port}/v1/me")
+            code, text = get(f"http://127.0.0.1:{mport}/metrics")
+            self.assertEqual(code, 200)
+            self.assertRegex(text, r'omnisync_http_request_seconds_count\{[^}]*route="/healthz"')
+            self.assertRegex(text, r'omnisync_http_request_seconds_count\{[^}]*route="/v1/me"[^}]*status_class="4xx"')
+            self.assertIn('service_name="omnisync-control-plane"', text)
+            self.assertEqual(get(f"http://127.0.0.1:{port}/metrics")[0], 404)
+            self.assertNotIn(self.issuer_seed, text)
+        finally:
+            self.stop(p)
+
+    def test_control_plane_refuses_metrics_on_the_application_port(self):
+        port = free_port()
+        env = self.env(PORT=str(port), OMNISYNC_METRICS_PORT=str(port), OMNISYNC_ISSUER_KEY_FILE=os.path.join(self.key_dir, "issuer-key"),
+                       OMNISYNC_SESSION_SECRET=secrets.token_hex(32), OMNISYNC_OIDC_ISSUER="http://127.0.0.1:9", OMNISYNC_OIDC_CLIENT_ID="x",
+                       OMNISYNC_OIDC_REDIRECT_URI="https://x.test/cb")
+        p, _ = self.run_until("control-plane", "dist/main.js", env, None, timeout=10)
+        self.assertRegex(self.refused(p), r"OMNISYNC_METRICS_PORT")
+
 
 if __name__ == "__main__":
     unittest.main()

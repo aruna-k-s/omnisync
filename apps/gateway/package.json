@@ -24,6 +24,7 @@
     "@omnisync/engine": "workspace:*",
     "@omnisync/protocol": "workspace:*",
     "@omnisync/store": "workspace:*",
+    "@omnisync/telemetry": "workspace:*",
     "@omnisync/verifier": "workspace:*",
     "ws": "^8.22.0",
     "yjs": "^13.6.33"

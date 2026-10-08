@@ -25,6 +25,7 @@
     "@omnisync/gateway": "workspace:*",
     "@omnisync/protocol": "workspace:*",
     "@omnisync/store": "workspace:*",
+    "@omnisync/telemetry": "workspace:*",
     "fastify": "^5.12.5",
     "jose": "^6.2.12",
     "openid-client": "^6.8.8",
@@ -33,10 +34,10 @@
   },
   "devDependencies": {
     "@omnisync/config": "workspace:*",
+    "@omnisync/verifier": "workspace:*",
     "@swc/core": "^1.16.13",
     "@types/pg": "^8.23.1",
     "pg": "^8.23.1",
-    "unplugin-swc": "^2.0.0",
-    "@omnisync/verifier": "workspace:*"
+    "unplugin-swc": "^2.0.0"
   }
 }
