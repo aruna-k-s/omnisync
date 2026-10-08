@@ -198,6 +198,14 @@ class Deployed(unittest.TestCase):
         for secret in (self.ledger_seed, self.issuer_seed):
             self.assertNotIn(secret, out)
 
+    def test_the_export_command_the_runbook_uses_works_from_the_deployed_directory(self):
+        out = os.path.join(self.tmp, "ledger-export.ndjson")
+        env = self.gateway_env(free_port())
+        r = subprocess.run(["node", "dist/export-cli.js", out], cwd=self.dirs["gateway"], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("exported", r.stderr)
+        self.assertEqual(oct(os.stat(out).st_mode & 0o777), "0o600")
+
     def test_gateway_refuses_a_ledger_key_others_can_read(self):
         bad = os.path.join(self.key_dir, "ledger-readable")
         with open(bad, "w") as f:

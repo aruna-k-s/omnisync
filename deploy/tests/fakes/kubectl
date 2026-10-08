@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Stand-in for kubectl in deploy/tests/test_install_script.py: keeps namespaces and Secrets in $FAKE_STATE and logs every
+call (arguments and the whole environment) to $FAKE_STATE/calls.jsonl, so a test can prove what was and was not passed."""
+import base64
+import json
+import os
+import sys
+
+state = os.environ["FAKE_STATE"]
+args = sys.argv[1:]
+with open(os.path.join(state, "calls.jsonl"), "a") as f:
+    f.write(json.dumps({"tool": "kubectl", "argv": args, "env": dict(os.environ), "stdin_tty": sys.stdin.isatty()}) + "\n")
+
+
+def path(*p):
+    return os.path.join(state, *p)
+
+
+def flag(name):
+    return args[args.index(name) + 1] if name in args else None
+
+
+if args[:1] == ["version"] or args[:1] == ["cluster-info"]:
+    sys.exit(1 if os.environ.get("FAKE_KUBECTL_DOWN") else 0)
+ns = flag("-n")
+if args[:2] == ["get", "namespace"]:
+    sys.exit(0 if os.path.exists(path("ns", args[2])) else 1)
+if args[:2] == ["create", "namespace"]:
+    os.makedirs(path("ns", args[2]), exist_ok=True)
+    sys.exit(0)
+if args[:2] == ["label", "namespace"]:
+    with open(path("labels-" + args[2]), "w") as f:
+        json.dump([a for a in args[3:] if "=" in a], f)
+    sys.exit(0)
+if args[:2] == ["get", "secret"]:
+    d = path("secrets", f"{ns}-{args[2]}")
+    if not os.path.isdir(d):
+        sys.exit(1)
+    out = flag("-o")
+    if out is None:
+        sys.exit(0)
+    if out.startswith("go-template"):
+        print(" ".join(sorted(os.listdir(d))), end="")
+        sys.exit(0)
+    if out.startswith("jsonpath"):
+        key = out.split(".data.")[1].rstrip("}")
+        print(base64.b64encode(open(os.path.join(d, key), "rb").read()).decode(), end="")
+        sys.exit(0)
+if args[:3] == ["create", "secret", "generic"]:
+    d = path("secrets", f"{ns}-{args[3]}")
+    if os.path.isdir(d):
+        print("Error from server (AlreadyExists)", file=sys.stderr)
+        sys.exit(1)
+    os.makedirs(d)
+    for a in args:
+        if a.startswith("--from-file="):
+            k, p = a[len("--from-file="):].split("=", 1)
+            with open(os.path.join(state, "modes.jsonl"), "a") as m:  # who could read the file the secret was made from
+                m.write(json.dumps({"key": k, "file": oct(os.stat(p).st_mode & 0o777), "dir": oct(os.stat(os.path.dirname(p)).st_mode & 0o777)}) + "\n")
+            with open(p, "rb") as src, open(os.path.join(d, k), "wb") as dst:
+                dst.write(src.read())
+    sys.exit(0)
+print("fake kubectl: unsupported " + " ".join(args), file=sys.stderr)
+sys.exit(99)

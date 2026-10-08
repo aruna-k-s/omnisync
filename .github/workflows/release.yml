@@ -1,0 +1,242 @@
+name: release
+
+# A tag vMAJOR.MINOR.PATCH builds, scans, signs and publishes the three images and the chart. Run by hand
+# (workflow_dispatch) it does everything except push and sign, so a release can be rehearsed. Spec: docs/specs/release.md.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to rehearse (nothing is pushed or signed), for example v1.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/omnisync
+  REGISTRY_CHARTS: ghcr.io/omnisync/charts
+  # push: the pushed tag; workflow_dispatch: the rehearsal tag (read through the environment, never spliced into a script)
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
+jobs:
+  # A tag on a commit whose checks are not green publishes nothing.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $RELEASE_TAG" >&2; exit 1; }
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Require the CI jobs to have passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?per_page=100" --jq '.check_runs[] | [.name, .conclusion] | @tsv')
+          echo "$runs"
+          for job in check deploy; do
+            printf '%s\n' "$runs" | grep -qP "^$job\tsuccess$" || { echo "CI job '$job' has not succeeded on $sha" >&2; exit 1; }
+          done
+
+  publish:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        image: [gateway, control-plane, web]
+    env:
+      VERSION: ${{ needs.gate.outputs.version }}
+      IMAGE: ${{ matrix.image }}
+      PUSH: ${{ github.event_name == 'push' && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: sigstore/cosign-installer@v3
+      - name: Pin the base images by digest
+        id: base
+        run: |
+          pin() { # $1: ARG name in the Dockerfile
+            ref=$(sed -n "s/^ARG $1=//p" deploy/docker/Dockerfile)
+            digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "cannot resolve $ref" >&2; exit 1; }
+            echo "$ref@$digest"
+          }
+          echo "base=$(pin BASE_IMAGE)" >> "$GITHUB_OUTPUT"
+          echo "nginx=$(pin NGINX_IMAGE)" >> "$GITHUB_OUTPUT"
+      - name: Build (pushed on a tag; only loaded locally in a rehearsal)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: ${{ matrix.image }}
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.base }}
+            NGINX_IMAGE=${{ steps.base.outputs.nginx }}
+          tags: ${{ env.REGISTRY }}/omnisync-${{ matrix.image }}:${{ env.VERSION }}
+          push: ${{ env.PUSH == 'true' }}
+          load: ${{ env.PUSH != 'true' }}
+          provenance: ${{ env.PUSH == 'true' && 'mode=max' || 'false' }}
+          sbom: false
+      - name: Image reference
+        id: ref
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          if [ "$PUSH" = true ]; then
+            [[ $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no image digest from the build" >&2; exit 1; }
+            echo "ref=$REGISTRY/omnisync-$IMAGE@$DIGEST" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=$REGISTRY/omnisync-$IMAGE:$VERSION" >> "$GITHUB_OUTPUT"
+          fi
+      - name: SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.ref.outputs.ref }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.image }}.spdx.json
+          upload-artifact: false
+      - name: Scan, failing on a fixable high or critical vulnerability
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.ref.outputs.ref }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: json
+          output: scan-${{ matrix.image }}.json
+      - name: Sign and attest the digest (keyless)
+        if: env.PUSH == 'true'
+        run: |
+          [[ $REF =~ @sha256:[0-9a-f]{64}$ ]] || { echo "refusing to sign something that is not name@digest: $REF" >&2; exit 1; }
+          cosign sign --yes "$REF"
+          cosign attest --yes --type spdxjson --predicate "sbom-$IMAGE.spdx.json" "$REF"
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+      - name: Record the digests
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+          BASE: ${{ steps.base.outputs.base }}
+          NGINX: ${{ steps.base.outputs.nginx }}
+        run: |
+          mkdir -p out
+          printf '%s\n' "$IMAGE $REF" > "out/digest-$IMAGE.txt"
+          if [ "$IMAGE" = web ]; then printf '%s\n' "$IMAGE base $NGINX" >> "out/digest-$IMAGE.txt"; else printf '%s\n' "$IMAGE base $BASE" >> "out/digest-$IMAGE.txt"; fi
+          cp "sbom-$IMAGE.spdx.json" "scan-$IMAGE.json" out/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-${{ matrix.image }}
+          path: out/
+          if-no-files-found: ignore
+
+  chart:
+    needs: [gate, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.gate.outputs.version }}
+      PUSH: ${{ github.event_name == 'push' && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+      - uses: sigstore/cosign-installer@v3
+      - name: Lint and package
+        run: |
+          helm lint deploy/helm/omnisync --strict -f deploy/tests/values/minimal.yaml
+          helm package deploy/helm/omnisync --version "$VERSION" --app-version "$VERSION" --destination out
+      - name: Push and sign by digest
+        if: env.PUSH == 'true'
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "$GH_ACTOR" --password-stdin
+          helm push "out/omnisync-$VERSION.tgz" "oci://$REGISTRY_CHARTS" 2>&1 | tee push.log
+          digest=$(sed -n 's/^Digest: //p' push.log)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no chart digest in the push output" >&2; exit 1; }
+          cosign sign --yes "$REGISTRY_CHARTS/omnisync@$digest"
+          echo "chart $REGISTRY_CHARTS/omnisync@$digest" > out/digest-chart.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-chart
+          path: out/
+
+  # Only this job may write to the repository, and it runs no third-party action.
+  release:
+    needs: [gate, publish, chart]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.gate.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-*
+          merge-multiple: true
+      - name: Release notes and assets
+        run: |
+          {
+            echo "## OmniSync $VERSION"
+            echo
+            echo "Images and chart are signed with cosign (keyless, this workflow's identity). Verify before you install:"
+            echo
+            echo '```'
+            echo "cosign verify <image>@<digest> \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/v' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo '```'
+            echo
+            echo "### Digests"
+            echo '```'
+            cat artifacts/digest-*.txt
+            echo '```'
+            echo
+            echo "The SBOMs (SPDX JSON) and scan reports are attached. See docs/install.md."
+          } > notes.md
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "OmniSync $VERSION" --notes-file notes.md --verify-tag \
+            artifacts/sbom-*.spdx.json artifacts/scan-*.json

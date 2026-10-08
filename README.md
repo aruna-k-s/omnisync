@@ -2,7 +2,7 @@
 
 Self-hosted collaboration gateway for regulated teams: every edit is a signed envelope, and AI agents edit only on branches a human merges.
 
-**Status: Phase 1, week 8 (console, reference app and command-line login done).** What exists today:
+**Status: Phase 1, week 9 (install path built: S3 with Object Lock, images, Helm chart, signed-release workflow, installer; not yet run on a real cluster).** What exists today:
 
 | Package | What it does |
 | --- | --- |
@@ -18,6 +18,7 @@ Self-hosted collaboration gateway for regulated teams: every edit is a signed en
 | `apps/console` | Angular admin console: people and devices (one-click revoke), documents and grants, audit trail, in-browser ledger verification (labelled "consistent", never "anchored") |
 | `apps/reference-app` | Angular shared workbook (tables and text) on the SDK: sign-in, non-extractable device key, live editing, offline edits, read-only mode, and the page where a person approves a command-line sign-in. `pnpm --filter @omnisync/reference-app demo` runs a whole in-memory deployment to show it |
 | `apps/cli` | `omnisync-cli login / whoami / logout`: device-code sign-in for terminals and build agents; keeps a device key (private file) and certificate |
+| `deploy` | Dockerfile (three images), Helm chart (hardened pods, default-deny network policy, ingress throttling, optional bundled PostgreSQL and MinIO), `install/install.sh`, and the tests and preflight renderer behind them |
 | `bench` | Engine spike, signing cost and end-to-end latency, raw results as JSON |
 
 ## Quick start
@@ -34,7 +35,7 @@ pnpm --filter @omnisync/console build && pnpm --filter @omnisync/reference-app b
 pnpm --filter @omnisync/reference-app demo     # prints the app and console URLs
 ```
 
-Gateway design: [docs/specs/gateway-core.md](docs/specs/gateway-core.md). Identity and certificates: [docs/specs/identity.md](docs/specs/identity.md). Ledger, checkpoints and the verifier: [docs/specs/ledger.md](docs/specs/ledger.md). Structured data in the engine: [docs/specs/engine-structured.md](docs/specs/engine-structured.md). SDK and offline mode: [docs/specs/sdk.md](docs/specs/sdk.md). Admin API and browser login: [docs/specs/admin-api.md](docs/specs/admin-api.md). Console: [docs/specs/console.md](docs/specs/console.md). Reference app: [docs/specs/reference-app.md](docs/specs/reference-app.md). Device-code login and the CLI: [docs/specs/device-login.md](docs/specs/device-login.md). Engine decision draft: [docs/decisions/0001-engine-choice.md](docs/decisions/0001-engine-choice.md). Specs live in `docs/specs/`. Working with AI assistants: [AGENTS.md](AGENTS.md).
+Gateway design: [docs/specs/gateway-core.md](docs/specs/gateway-core.md). Identity and certificates: [docs/specs/identity.md](docs/specs/identity.md). Ledger, checkpoints and the verifier: [docs/specs/ledger.md](docs/specs/ledger.md). Structured data in the engine: [docs/specs/engine-structured.md](docs/specs/engine-structured.md). SDK and offline mode: [docs/specs/sdk.md](docs/specs/sdk.md). Admin API and browser login: [docs/specs/admin-api.md](docs/specs/admin-api.md). Console: [docs/specs/console.md](docs/specs/console.md). Reference app: [docs/specs/reference-app.md](docs/specs/reference-app.md). Device-code login and the CLI: [docs/specs/device-login.md](docs/specs/device-login.md). S3 storage with Object Lock: [docs/specs/s3-object-store.md](docs/specs/s3-object-store.md). Images and Helm chart: [docs/specs/deployment.md](docs/specs/deployment.md). Signed releases and the installer: [docs/specs/release.md](docs/specs/release.md). **Installing: [docs/install.md](docs/install.md).** Engine decision draft: [docs/decisions/0001-engine-choice.md](docs/decisions/0001-engine-choice.md). Specs live in `docs/specs/`. Working with AI assistants: [AGENTS.md](AGENTS.md).
 
 ## License
 

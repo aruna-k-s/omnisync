@@ -10,7 +10,7 @@ Runs on a tag `vMAJOR.MINOR.PATCH`, and by hand (`workflow_dispatch`) for a dry 
 
 | Step | What | Why |
 | --- | --- | --- |
-| Gate | Re-runs the repository checks (lint, build, typecheck, tests, chart checks) on the tagged commit | A tag on a red commit publishes nothing |
+| Gate | Requires the CI jobs `check` and `deploy` (lint, build, typecheck, every test, chart and image checks) to have succeeded on the tagged commit, by reading its check runs | A tag on a red or never-tested commit publishes nothing, and the release does not repeat a 15-minute build to find that out |
 | Pin base images | Resolves `node:22.22.2-slim` and `nginxinc/nginx-unprivileged:1.28-alpine` to digests at build time (`docker buildx imagetools inspect`) and passes `BASE_IMAGE` / `NGINX_IMAGE` as `name@sha256:...`; the digests go into the release notes | The tag a base image carries can move; the digest used for this release cannot |
 | Build | `docker buildx build --target <gateway or control-plane or web>`, `--provenance=mode=max`, pushed to `ghcr.io/omnisync/omnisync-<name>` by tag, then referred to by digest | One build per image, provenance attached |
 | SBOM | `syft` over each pushed digest, SPDX JSON, attached as a signed attestation (`cosign attest --type spdxjson`) and as a release asset | The SBOM is bound to the digest it describes, not to a tag |

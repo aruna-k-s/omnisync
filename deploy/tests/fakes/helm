@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Stand-in for helm in deploy/tests/test_install_script.py (see fakes/kubectl)."""
+import json
+import os
+import shutil
+import sys
+import time
+
+state = os.environ["FAKE_STATE"]
+args = sys.argv[1:]
+with open(os.path.join(state, "calls.jsonl"), "a") as f:
+    f.write(json.dumps({"tool": "helm", "argv": args, "env": dict(os.environ)}) + "\n")
+if args[:1] == ["version"]:
+    print(os.environ.get("FAKE_HELM_VERSION", "v3.18.6"), end="")
+    sys.exit(0)
+if args[:2] == ["upgrade", "--install"]:
+    shutil.copy(args[args.index("-f") + 1], os.path.join(state, "helm-values.yaml"))
+    if os.environ.get("FAKE_HELM_SLEEP"):
+        open(os.path.join(state, "helm-running"), "w").close()
+        time.sleep(float(os.environ["FAKE_HELM_SLEEP"]))
+    if os.environ.get("FAKE_HELM_FAIL"):
+        print("Error: INSTALLATION FAILED: timed out waiting for the condition", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+sys.exit(99)

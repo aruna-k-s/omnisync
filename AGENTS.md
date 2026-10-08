@@ -6,7 +6,7 @@ Shared instructions for every AI coding assistant working in this repo (Claude C
 
 OmniSync Enterprise: a self-hosted collaboration gateway for regulated companies. Every edit is a signed envelope, every accepted edit is verifiable, and AI agents edit only on shadow branches that a human merges. Product spec and build plan: the "OmniSync Enterprise - Final Product Specification and Build Plan (v4)" doc.
 
-Current phase: **Phase 1 - MVP, week 8 done (console, reference app, command-line login)**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 9 (install path: Helm chart, S3 adapter with Object Lock, signed images and SBOM; needs decision D8; see the plan). Agents and shadow branches start in week 11. Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7), `docs/specs/admin-api.md`, `docs/specs/console.md`, `docs/specs/reference-app.md` and `docs/specs/device-login.md` (week 8), `docs/specs/s3-object-store.md` (week 9a), `docs/specs/deployment.md` (week 9b: images and Helm chart).
+Current phase: **Phase 1 - MVP, week 9 built (install path); the real-cluster install and the first signed release are still open**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 10 (see the plan); agents and shadow branches start in week 11. Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7), `docs/specs/admin-api.md`, `docs/specs/console.md`, `docs/specs/reference-app.md` and `docs/specs/device-login.md` (week 8), `docs/specs/s3-object-store.md` (week 9a), `docs/specs/deployment.md` (week 9b: images and Helm chart), `docs/specs/release.md` and `docs/install.md` (week 9c: signed releases, installer, runbook).
 
 ## Commands
 
@@ -57,7 +57,7 @@ docs/specs/          one spec per feature, written before code
 docs/decisions/      architecture decision records
 ```
 
-`deploy/` holds the Dockerfile (`deploy/docker`), the Helm chart (`deploy/helm/omnisync`), the preflight renderer and manifest comparison (`deploy/tools`) and their tests with three values files (`deploy/tests`). Planned (Phase 1): `packages/agent-sdk`. `packages/sdk-react` is unused by the apps (the UI stack is Angular).
+`deploy/` holds the Dockerfile (`deploy/docker`), the Helm chart (`deploy/helm/omnisync`), the installer (`deploy/install/install.sh`), the preflight renderer and manifest comparison (`deploy/tools`) and their tests with three values files (`deploy/tests`). Planned (Phase 1): `packages/agent-sdk`. `packages/sdk-react` is unused by the apps (the UI stack is Angular).
 
 ## Conventions
 
@@ -80,6 +80,7 @@ Changes here are never merged on AI review alone. Ask before editing, and the hu
 - `packages/store/src/identity*.ts` and migrations `002` and `004` (identity and device-code tables)
 - Durability logic in `apps/gateway/src/room.ts` (write path, snapshot cut, cold load)
 - `apps/gateway/src/{storage-config,ledger-config,serve}.ts`, `packages/store/src/{s3,object-key,fs-object-store,types}.ts`: where checkpoints are written and how they are locked
+- `deploy/install/install.sh` (key generation and the Secret), `.github/workflows/release.yml` (signing and publishing)
 - `deploy/helm/omnisync/**` (what is mounted where, which secrets reach which pod, network policy, pod hardening, the MinIO delete-free policy) and `deploy/docker/Dockerfile`
 - `packages/store/migrations/**` and `packages/store/src/pg.ts`: the append-only log. Never edit an applied migration; add a new one
 
@@ -107,4 +108,5 @@ Changes here are never merged on AI review alone. Ask before editing, and the hu
 - Never write a device private key to disk except the CLI's private key file (0600, created exclusively, never overwritten, refused when readable by others); browsers keep a non-extractable key.
 - Never store a device code: only its SHA-256; never put a user code or device code in the audit trail or a log.
 - Never give the gateway's S3 credentials `s3:DeleteObject` or `s3:DeleteObjectVersion` on the checkpoint bucket, never let `S3ObjectStore` delete or overwrite a locked key, and never default the checkpoint retention (an operator chooses it; compliance mode cannot be shortened).
+- Never put a secret value on a command line, in an environment variable or in a values file in the installer or the release workflow (files and the Kubernetes Secret only), and never overwrite an existing Secret.
 - Never remove the login/lookup rate limits on the device routes, and never make a wrong user code distinguishable from an unknown one.
