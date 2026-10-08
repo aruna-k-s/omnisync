@@ -6,7 +6,7 @@ Shared instructions for every AI coding assistant working in this repo (Claude C
 
 OmniSync Enterprise: a self-hosted collaboration gateway for regulated companies. Every edit is a signed envelope, every accepted edit is verifiable, and AI agents edit only on shadow branches that a human merges. Product spec and build plan: the "OmniSync Enterprise - Final Product Specification and Build Plan (v4)" doc.
 
-Current phase: **Phase 1 - MVP, week 9 built (install path); the real-cluster install and the first signed release are still open**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 10 (see the plan); agents and shadow branches start in week 11. Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7), `docs/specs/admin-api.md`, `docs/specs/console.md`, `docs/specs/reference-app.md` and `docs/specs/device-login.md` (week 8), `docs/specs/s3-object-store.md` (week 9a), `docs/specs/deployment.md` (week 9b: images and Helm chart), `docs/specs/release.md` and `docs/install.md` (week 9c: signed releases, installer, runbook).
+Current phase: **Phase 1 - MVP, week 10 built (metrics, traces, dashboard, alerts, load numbers); the real-cluster install, the first signed release and the load tickets in `docs/specs/load.md` are still open**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 11 (see the plan): agents and shadow branches, after the load tickets are triaged. Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7), `docs/specs/admin-api.md`, `docs/specs/console.md`, `docs/specs/reference-app.md` and `docs/specs/device-login.md` (week 8), `docs/specs/s3-object-store.md` (week 9a), `docs/specs/deployment.md` (week 9b: images and Helm chart), `docs/specs/release.md` and `docs/install.md` (week 9c: signed releases, installer, runbook), `docs/specs/observability.md` and `docs/operations.md` (week 10a/10b: metrics, traces, dashboard, alert rules, what to do when one fires), `docs/specs/load.md` (week 10c: load harness, measured numbers, tickets).
 
 ## Commands
 
@@ -48,16 +48,17 @@ packages/crypto/     Ed25519 session certificates, AUTH possession proof, enroll
 packages/verifier/   offline ledger verifier and the `omnisync` command (Apache-2.0). Reads an export and public keys, never a database
 packages/protocol/   frames, varints, signed envelopes, keyring, test vectors (Apache-2.0)
 packages/engine/     engine interface (text + JSON tree of maps and arrays) + Yjs, Automerge, Loro adapters. `@omnisync/engine/yjs` is a subpath so a browser bundle can omit the other two
+packages/telemetry/  metrics and traces (OpenTelemetry API, Prometheus endpoint on its own port): observer-only, closed label sets, off unless configured. `@omnisync/telemetry/testing` reads a real scrape back as text
 packages/store/      hash-chained update log, checkpoints, identity store (principals, certificates with their signed bytes, grants, document registry, audit), snapshot metadata (PostgreSQL + in-memory), object storage (filesystem, memory, and the S3 adapter with Object Lock at `@omnisync/store/s3`), SQL migrations, fault injection (`@omnisync/store/testing`)
 packages/sdk/        browser and Node SDK (Apache-2.0): device key (WebCrypto, non-extractable), outbox (memory, IndexedDB), batching, SyncDocument, enrollment. Test page and Playwright test under browser/ and test/browser.test.ts
 packages/sdk-react/  React hooks only (peer: React 18 or 19)
 packages/config/     shared tsconfig
-bench/               benchmark harness; raw results in bench/results/
+bench/               engine and end-to-end benchmark (`pnpm bench`) and the load harness (`pnpm load`: separate-process gateway on PostgreSQL; raw results in bench/results/)
 docs/specs/          one spec per feature, written before code
 docs/decisions/      architecture decision records
 ```
 
-`deploy/` holds the Dockerfile (`deploy/docker`), the Helm chart (`deploy/helm/omnisync`), the installer (`deploy/install/install.sh`), the preflight renderer and manifest comparison (`deploy/tools`) and their tests with three values files (`deploy/tests`). Planned (Phase 1): `packages/agent-sdk`. `packages/sdk-react` is unused by the apps (the UI stack is Angular).
+`deploy/` holds the Dockerfile (`deploy/docker`), the Helm chart (`deploy/helm/omnisync`), the installer (`deploy/install/install.sh`), the preflight renderer and manifest comparison (`deploy/tools`) and their tests with four values files (`deploy/tests`), the Grafana dashboard generator (`deploy/monitoring`) and the k6 script for the control plane (`deploy/load`). Planned (Phase 1): `packages/agent-sdk`. `packages/sdk-react` is unused by the apps (the UI stack is Angular).
 
 ## Conventions
 
@@ -88,6 +89,7 @@ Changes here are never merged on AI review alone. Ask before editing, and the hu
 
 - Never invent cryptography. Ed25519 via node:crypto or `@noble/ed25519`, hashes via `@noble/hashes`, nothing hand-rolled.
 - Never log secrets, secret keys, tokens or document payloads.
+- Never put a document id, principal, key, token, email or payload in a metric name, label value, span name or span attribute. Labels come from closed sets written in code; telemetry never changes what the gateway or control plane does (`docs/specs/observability.md`).
 - Never disable certificate or signature verification, even in tests; use test keys instead.
 - Never sign a checkpoint with the certificate issuing key, or a certificate with the ledger key (separate keys, separate trust inputs).
 - Never upload a checkpoint before it is reserved in the database, never reuse a checkpoint number, and never overwrite a bucket object that holds different bytes.

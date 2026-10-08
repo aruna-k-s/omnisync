@@ -109,6 +109,9 @@ jobs:
           cat moto.log; exit 1
       - name: Dockerfile
         run: hadolint deploy/docker/Dockerfile
+      - uses: grafana/setup-k6-action@v1
+      - name: k6 script for the control plane parses
+        run: k6 inspect deploy/load/control-plane.k6.js
       - name: Dashboard is generated from its source
         run: python3 deploy/monitoring/dashboard.py --check
       - name: helm lint

@@ -2,7 +2,7 @@
 
 Self-hosted collaboration gateway for regulated teams: every edit is a signed envelope, and AI agents edit only on branches a human merges.
 
-**Status: Phase 1, week 9 (install path built: S3 with Object Lock, images, Helm chart, signed-release workflow, installer; not yet run on a real cluster).** What exists today:
+**Status: Phase 1, week 10 (install path built but not yet run on a real cluster; metrics, traces, dashboard and alert rules; load numbers measured on one machine, with open tickets).** What exists today:
 
 | Package | What it does |
 | --- | --- |
@@ -13,6 +13,7 @@ Self-hosted collaboration gateway for regulated teams: every edit is a signed en
 | `packages/sdk` | Browser and Node SDK: non-extractable device key, durable outbox (IndexedDB), 50-250 ms batching, offline-first documents with reconnect, enrollment helper. Apache-2.0 |
 | `packages/sdk-react` | React hooks over the SDK (`useDocument`, `useStatus`, `usePending`) |
 | `packages/store` | Append-only update log and identity store (principals, certificates, grants, audit) in PostgreSQL, snapshot metadata, object storage, migrations |
+| `packages/telemetry` | Metrics (Prometheus endpoint on its own port) and sampled traces for the gateway and control plane: observer-only, closed label sets, off unless configured |
 | `apps/gateway` | WebSocket gateway: authenticates connections with certificates, enforces roles, verifies every update, commits it to the log before ACK, snapshots, cold-loads, evicts idle documents; reconnecting client |
 | `apps/control-plane` | NestJS service: OIDC login (JSON or browser redirect), device-code login, certificate issuance, grants, revocation, audit log, admin API (people, documents, grants, audit, ledger trust keys and export) |
 | `apps/console` | Angular admin console: people and devices (one-click revoke), documents and grants, audit trail, in-browser ledger verification (labelled "consistent", never "anchored") |
@@ -35,7 +36,7 @@ pnpm --filter @omnisync/console build && pnpm --filter @omnisync/reference-app b
 pnpm --filter @omnisync/reference-app demo     # prints the app and console URLs
 ```
 
-Gateway design: [docs/specs/gateway-core.md](docs/specs/gateway-core.md). Identity and certificates: [docs/specs/identity.md](docs/specs/identity.md). Ledger, checkpoints and the verifier: [docs/specs/ledger.md](docs/specs/ledger.md). Structured data in the engine: [docs/specs/engine-structured.md](docs/specs/engine-structured.md). SDK and offline mode: [docs/specs/sdk.md](docs/specs/sdk.md). Admin API and browser login: [docs/specs/admin-api.md](docs/specs/admin-api.md). Console: [docs/specs/console.md](docs/specs/console.md). Reference app: [docs/specs/reference-app.md](docs/specs/reference-app.md). Device-code login and the CLI: [docs/specs/device-login.md](docs/specs/device-login.md). S3 storage with Object Lock: [docs/specs/s3-object-store.md](docs/specs/s3-object-store.md). Images and Helm chart: [docs/specs/deployment.md](docs/specs/deployment.md). Signed releases and the installer: [docs/specs/release.md](docs/specs/release.md). **Installing: [docs/install.md](docs/install.md).** Engine decision draft: [docs/decisions/0001-engine-choice.md](docs/decisions/0001-engine-choice.md). Specs live in `docs/specs/`. Working with AI assistants: [AGENTS.md](AGENTS.md).
+Gateway design: [docs/specs/gateway-core.md](docs/specs/gateway-core.md). Identity and certificates: [docs/specs/identity.md](docs/specs/identity.md). Ledger, checkpoints and the verifier: [docs/specs/ledger.md](docs/specs/ledger.md). Structured data in the engine: [docs/specs/engine-structured.md](docs/specs/engine-structured.md). SDK and offline mode: [docs/specs/sdk.md](docs/specs/sdk.md). Admin API and browser login: [docs/specs/admin-api.md](docs/specs/admin-api.md). Console: [docs/specs/console.md](docs/specs/console.md). Reference app: [docs/specs/reference-app.md](docs/specs/reference-app.md). Device-code login and the CLI: [docs/specs/device-login.md](docs/specs/device-login.md). S3 storage with Object Lock: [docs/specs/s3-object-store.md](docs/specs/s3-object-store.md). Images and Helm chart: [docs/specs/deployment.md](docs/specs/deployment.md). Signed releases and the installer: [docs/specs/release.md](docs/specs/release.md). Metrics, traces and alerts: [docs/specs/observability.md](docs/specs/observability.md), and what to do when an alert fires: [docs/operations.md](docs/operations.md). Load numbers: [docs/specs/load.md](docs/specs/load.md). **Installing: [docs/install.md](docs/install.md).** Engine decision draft: [docs/decisions/0001-engine-choice.md](docs/decisions/0001-engine-choice.md). Specs live in `docs/specs/`. Working with AI assistants: [AGENTS.md](AGENTS.md).
 
 ## License
 

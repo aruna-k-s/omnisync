@@ -5,17 +5,22 @@
   "type": "module",
   "scripts": {
     "bench": "node --expose-gc --import tsx src/run.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "load": "node --expose-gc --import tsx src/load.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@omnisync/engine": "workspace:*",
-    "@omnisync/protocol": "workspace:*",
     "@omnisync/gateway": "workspace:*",
+    "@omnisync/protocol": "workspace:*",
     "@omnisync/store": "workspace:*",
-    "pg": "^8.23.1"
+    "@omnisync/telemetry": "workspace:*",
+    "pg": "^8.23.1",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@omnisync/config": "workspace:*",
-    "@types/pg": "^8.23.1"
+    "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.2"
   }
 }

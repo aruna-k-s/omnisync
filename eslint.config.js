@@ -15,5 +15,10 @@ export default tseslint.config(
   {
     files: ["bench/**", "apps/gateway/src/main.ts"],
     rules: { "no-console": "off" }
+  },
+  {
+    // k6 scripts run in k6's runtime, which provides `__ENV`; they are not Node modules.
+    files: ["deploy/load/**/*.js"],
+    languageOptions: { globals: { __ENV: "readonly" } }
   }
 );
