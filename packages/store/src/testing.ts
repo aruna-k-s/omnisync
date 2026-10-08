@@ -134,6 +134,11 @@ export class FaultyObjectStore implements ObjectStore {
     if (this.down) throw new Error("injected object store outage");
     return this.inner.put(key, bytes);
   }
+  async putIfAbsent(key: string, bytes: Uint8Array): Promise<boolean> {
+    if (this.hang) return new Promise(() => {});
+    if (this.down) throw new Error("injected object store outage");
+    return this.inner.putIfAbsent(key, bytes);
+  }
   async get(key: string): Promise<Uint8Array | undefined> {
     if (this.hang) return new Promise(() => {});
     if (this.down) throw new Error("injected object store outage");

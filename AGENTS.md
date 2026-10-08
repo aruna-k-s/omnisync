@@ -6,7 +6,7 @@ Shared instructions for every AI coding assistant working in this repo (Claude C
 
 OmniSync Enterprise: a self-hosted collaboration gateway for regulated companies. Every edit is a signed envelope, every accepted edit is verifiable, and AI agents edit only on shadow branches that a human merges. Product spec and build plan: the "OmniSync Enterprise - Final Product Specification and Build Plan (v4)" doc.
 
-Current phase: **Phase 1 - MVP, week 8 done (console, reference app, command-line login)**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 9 (install path: Helm chart, S3 adapter with Object Lock, signed images and SBOM; needs decision D8; see the plan). Agents and shadow branches start in week 11. Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7), `docs/specs/admin-api.md`, `docs/specs/console.md`, `docs/specs/reference-app.md` and `docs/specs/device-login.md` (week 8).
+Current phase: **Phase 1 - MVP, week 8 done (console, reference app, command-line login)**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 9 (install path: Helm chart, S3 adapter with Object Lock, signed images and SBOM; needs decision D8; see the plan). Agents and shadow branches start in week 11. Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7), `docs/specs/admin-api.md`, `docs/specs/console.md`, `docs/specs/reference-app.md` and `docs/specs/device-login.md` (week 8), `docs/specs/s3-object-store.md` (week 9a).
 
 ## Commands
 
@@ -30,6 +30,7 @@ Current phase: **Phase 1 - MVP, week 8 done (console, reference app, command-lin
 | Browser tests for the apps and the CLI | `pnpm --filter @omnisync/console test`, `... reference-app test`, `... cli test` (need Chromium via `PLAYWRIGHT_BROWSERS_PATH` and fresh builds of the apps and of `@omnisync/cli`; `OMNISYNC_REQUIRE_BROWSER=1` makes a missing browser or build fail instead of skip, CI sets it) |
 | Demo deployment (in memory, fake IdP) | `pnpm --filter @omnisync/reference-app demo` after building both apps; `/demo/as?u=alice|bob|carol|admin` picks who signs in next |
 | Command-line client | `node apps/cli/dist/main.js login --server <url>` (`whoami`, `logout`); state in `$OMNISYNC_HOME` or `~/.omnisync` |
+| S3 and Object Lock tests | start an S3-compatible server (CI uses `pip install 'moto[server]'; moto_server -p 54330`) and set `OMNISYNC_TEST_S3_ENDPOINT=http://127.0.0.1:54330`; the suites are skipped without it unless `OMNISYNC_REQUIRE_S3=1` (CI sets it) |
 | Regenerate protocol vectors | `pnpm --filter @omnisync/protocol vectors` (wire-format break: bump `PROTOCOL_VERSION`) |
 
 Node 22.12+, pnpm 10.
@@ -46,7 +47,7 @@ packages/crypto/     Ed25519 session certificates, AUTH possession proof, enroll
 packages/verifier/   offline ledger verifier and the `omnisync` command (Apache-2.0). Reads an export and public keys, never a database
 packages/protocol/   frames, varints, signed envelopes, keyring, test vectors (Apache-2.0)
 packages/engine/     engine interface (text + JSON tree of maps and arrays) + Yjs, Automerge, Loro adapters. `@omnisync/engine/yjs` is a subpath so a browser bundle can omit the other two
-packages/store/      hash-chained update log, checkpoints, identity store (principals, certificates with their signed bytes, grants, document registry, audit), snapshot metadata (PostgreSQL + in-memory), object storage (filesystem + memory), SQL migrations, fault injection (`@omnisync/store/testing`)
+packages/store/      hash-chained update log, checkpoints, identity store (principals, certificates with their signed bytes, grants, document registry, audit), snapshot metadata (PostgreSQL + in-memory), object storage (filesystem, memory, and the S3 adapter with Object Lock at `@omnisync/store/s3`), SQL migrations, fault injection (`@omnisync/store/testing`)
 packages/sdk/        browser and Node SDK (Apache-2.0): device key (WebCrypto, non-extractable), outbox (memory, IndexedDB), batching, SyncDocument, enrollment. Test page and Playwright test under browser/ and test/browser.test.ts
 packages/sdk-react/  React hooks only (peer: React 18 or 19)
 packages/config/     shared tsconfig
@@ -77,6 +78,7 @@ Changes here are never merged on AI review alone. Ask before editing, and the hu
 - `apps/control-plane/src/{service,tokens,oidc,session,config,http,admin,device}.ts`: login (including the `return_to` redirect and the CORS hook in `app.ts`), device-code login, certificate issuance and revocation, admin authorization
 - `packages/store/src/identity*.ts` and migrations `002` and `004` (identity and device-code tables)
 - Durability logic in `apps/gateway/src/room.ts` (write path, snapshot cut, cold load)
+- `apps/gateway/src/{storage-config,ledger-config,serve}.ts`, `packages/store/src/{s3,object-key,fs-object-store,types}.ts`: where checkpoints are written and how they are locked
 - `packages/store/migrations/**` and `packages/store/src/pg.ts`: the append-only log. Never edit an applied migration; add a new one
 
 ## Never do
@@ -102,4 +104,5 @@ Changes here are never merged on AI review alone. Ask before editing, and the hu
 - Never let a browser say "anchored" about a ledger it verified with keys from the same server (say "consistent"); only `omnisync verify` with out-of-band keys and locked checkpoints can.
 - Never write a device private key to disk except the CLI's private key file (0600, created exclusively, never overwritten, refused when readable by others); browsers keep a non-extractable key.
 - Never store a device code: only its SHA-256; never put a user code or device code in the audit trail or a log.
+- Never give the gateway's S3 credentials `s3:DeleteObject` or `s3:DeleteObjectVersion` on the checkpoint bucket, never let `S3ObjectStore` delete or overwrite a locked key, and never default the checkpoint retention (an operator chooses it; compliance mode cannot be shortened).
 - Never remove the login/lookup rate limits on the device routes, and never make a wrong user code distinguishable from an unknown one.

@@ -12,6 +12,10 @@
     "./testing": {
       "types": "./dist/testing.d.ts",
       "default": "./dist/testing.js"
+    },
+    "./s3": {
+      "types": "./dist/s3.d.ts",
+      "default": "./dist/s3.js"
     }
   },
   "files": [
@@ -24,6 +28,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1147.0",
     "@omnisync/crypto": "workspace:*",
     "pg": "^8.23.1"
   },

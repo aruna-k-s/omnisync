@@ -72,7 +72,7 @@ The `CheckpointWriter` (gateway) runs every 5 minutes or after 1,000 persisted e
 5. Upload the exact bytes to `checkpoints/<tenant hex>/<n, 12 digits>.ckpt`. If the key already holds **different** bytes, the writer never overwrites: it counts an upload conflict, logs it and stops until a human looks. Identical bytes count as uploaded (a crash between put and mark).
 6. Record the upload.
 
-Because step 4 precedes step 5, the object store never holds two different objects for one `n`. A crash between 4 and 5 heals itself on the next tick. The existence check and the put are not atomic; Object Lock (week 9) closes that gap in the bucket itself. With S3 Object Lock in compliance mode (week 9), the upload is the part that cannot be rewritten later.
+Because step 4 precedes step 5, the object store never holds two different objects for one `n`. A crash between 4 and 5 heals itself on the next tick. Since week 9 the upload is one atomic `putIfAbsent` (a conditional write), so two writers cannot overwrite each other even between a look and a write; a refused write is followed by a read, and only identical bytes count as success. With S3 Object Lock in compliance mode (`docs/specs/s3-object-store.md`), the uploaded object cannot be rewritten or deleted until its retention ends.
 
 ## Export and verification
 

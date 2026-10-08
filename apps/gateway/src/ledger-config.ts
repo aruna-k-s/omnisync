@@ -1,5 +1,4 @@
 import { readFile, stat } from "node:fs/promises";
-import { resolve } from "node:path";
 import { MAX_TENANT_BYTES, ledgerSignerFromKeyPair, type LedgerSigner } from "@omnisync/crypto";
 import { bytesToHex, generateKeyPair, hexToBytes } from "@omnisync/protocol";
 
@@ -7,7 +6,6 @@ import { bytesToHex, generateKeyPair, hexToBytes } from "@omnisync/protocol";
 export interface LedgerConfig {
   readonly signer: LedgerSigner;
   readonly tenant: string;
-  readonly checkpointDir: string;
 }
 
 /**
@@ -24,12 +22,6 @@ export async function loadLedgerConfig(env: Record<string, string | undefined>, 
   if (Buffer.byteLength(tenant, "utf8") > MAX_TENANT_BYTES || !(tenant as string & { isWellFormed(): boolean }).isWellFormed()) {
     throw new Error(`OMNISYNC_TENANT must be 1-${MAX_TENANT_BYTES} bytes of well-formed text`);
   }
-  const checkpointDir = resolve(need("OMNISYNC_CHECKPOINT_DIR"));
-  const dataDir = env["OMNISYNC_DATA_DIR"];
-  if (dataDir !== undefined && resolve(dataDir) === checkpointDir) {
-    throw new Error("OMNISYNC_CHECKPOINT_DIR must not be the snapshot directory: checkpoints belong in the locked bucket");
-  }
-
   const keyFile = need("OMNISYNC_LEDGER_KEY_FILE");
   const info = await stat(keyFile).catch(() => {
     throw new Error("OMNISYNC_LEDGER_KEY_FILE cannot be read");
@@ -45,5 +37,5 @@ export async function loadLedgerConfig(env: Record<string, string | undefined>, 
   if (issuersHex.some((h) => h.trim().toLowerCase() === publicHex)) {
     throw new Error("the ledger key must not be a certificate issuing key");
   }
-  return { signer: ledgerSignerFromKeyPair(key), tenant, checkpointDir };
+  return { signer: ledgerSignerFromKeyPair(key), tenant };
 }

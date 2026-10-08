@@ -18,9 +18,12 @@ import {
 import { FaultyDocumentStore } from "../src/testing.js";
 import { checkpoint, documentStoreContract, upd } from "./contract.js";
 import { identityStoreContract } from "./identity-contract.js";
+import { objectStoreContract } from "./object-contract.js";
 
 documentStoreContract("memory", async () => new MemoryDocumentStore());
 identityStoreContract("memory", async () => new MemoryIdentityStore());
+objectStoreContract("memory", async () => new MemoryObjectStore());
+objectStoreContract("filesystem", async () => new FsObjectStore(await mkdtemp(join(tmpdir(), "omnisync-fs-contract-"))));
 
 describe("object stores", () => {
   const bytes = new Uint8Array([1, 2, 3]);

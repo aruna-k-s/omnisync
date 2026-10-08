@@ -10,8 +10,6 @@ let dir: string;
 let keyFile: string;
 const env = (over: Record<string, string | undefined> = {}): Record<string, string | undefined> => ({
   OMNISYNC_TENANT: "acme",
-  OMNISYNC_CHECKPOINT_DIR: join(dir, "locked"),
-  OMNISYNC_DATA_DIR: join(dir, "data"),
   OMNISYNC_LEDGER_KEY_FILE: keyFile,
   ...over,
 });
@@ -35,9 +33,8 @@ describe("loadLedgerConfig", () => {
     expect(c.signer.publicKey).toHaveLength(32);
   });
 
-  it("requires the tenant and the checkpoint directory instead of defaulting them", async () => {
+  it("requires the tenant and the key file instead of defaulting them", async () => {
     await expect(loadLedgerConfig(env({ OMNISYNC_TENANT: undefined }), issuer)).rejects.toThrow(/OMNISYNC_TENANT/);
-    await expect(loadLedgerConfig(env({ OMNISYNC_CHECKPOINT_DIR: undefined }), issuer)).rejects.toThrow(/OMNISYNC_CHECKPOINT_DIR/);
     await expect(loadLedgerConfig(env({ OMNISYNC_LEDGER_KEY_FILE: undefined }), issuer)).rejects.toThrow(/OMNISYNC_LEDGER_KEY_FILE/);
   });
 
@@ -66,10 +63,5 @@ describe("loadLedgerConfig", () => {
     const same = bytesToHex(generateKeyPair(Uint8Array.from(Buffer.from(SEED, "hex"))).publicKey);
     await expect(loadLedgerConfig(env(), [same])).rejects.toThrow(/issuing key/);
     await expect(loadLedgerConfig(env(), [` ${same.toUpperCase()} `])).rejects.toThrow(/issuing key/);
-  });
-
-  it("refuses to put checkpoints in the snapshot directory", async () => {
-    await expect(loadLedgerConfig(env({ OMNISYNC_CHECKPOINT_DIR: join(dir, "data") }), issuer)).rejects.toThrow(/snapshot directory/);
-    await expect(loadLedgerConfig(env({ OMNISYNC_CHECKPOINT_DIR: join(dir, "data", "..", "data") }), issuer)).rejects.toThrow(/snapshot directory/);
   });
 });

@@ -136,6 +136,11 @@ export interface LedgerStore {
 
 export interface ObjectStore {
   put(key: string, bytes: Uint8Array): Promise<void>;
+  /**
+   * Writes only when nothing is stored under `key`: true = created, false = something was already there and is left
+   * untouched. Atomic across concurrent callers (and, for shared backends, across processes).
+   */
+  putIfAbsent(key: string, bytes: Uint8Array): Promise<boolean>;
   /** Returns undefined when the object does not exist. */
   get(key: string): Promise<Uint8Array | undefined>;
   delete(key: string): Promise<void>;

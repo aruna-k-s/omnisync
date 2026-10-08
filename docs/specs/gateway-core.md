@@ -13,7 +13,7 @@ Source of truth is an **append-only update log** in PostgreSQL. Snapshots in obj
 | `update_sessions(document_id, key_id, session_id, last_seq)` | Replay high-water mark per signer session. Survives restarts |
 | `snapshots(document_id, version, object_key, sha256, up_to_seq, state_vector, size_bytes)` | Metadata for a full-state copy held in object storage |
 
-Interfaces (package `@omnisync/store`): `DocumentStore` (Postgres, plus an in-memory twin for tests) and `ObjectStore` (filesystem for dev, memory for tests; an S3 adapter follows with MinIO in week 9). Document ids stay text in week 4; the control plane moves them to uuids in week 5.
+Interfaces (package `@omnisync/store`): `DocumentStore` (Postgres, plus an in-memory twin for tests) and `ObjectStore` (filesystem for dev, memory for tests; the S3 adapter with Object Lock arrived in week 9, see `s3-object-store.md`). Document ids stay text in week 4; the control plane moves them to uuids in week 5.
 
 ## Write path
 

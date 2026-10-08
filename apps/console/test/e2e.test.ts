@@ -204,7 +204,7 @@ describe.skipIf(!haveChromium || !haveBuild)("console: SSO login to a verified l
     await page.getByTestId(`role-${seeded.aliceId}`).selectOption("read"); // demoting the only admin is refused too
     await expect.poll(() => page.getByTestId("error").textContent()).toContain("at least one enabled admin");
     expect(await identity().roleOf(seeded.docId, seeded.aliceId)).toBe("admin");
-    expect(await page.getByTestId(`role-${seeded.aliceId}`).inputValue()).toBe("admin"); // the page shows the truth, not the attempt
+    await expect.poll(() => page.getByTestId(`role-${seeded.aliceId}`).inputValue()).toBe("admin"); // the page shows the truth, not the attempt (it resets just after the error appears)
 
     await page.getByTestId(`remove-${seeded.aliceId}`).click(); // Alice is the only admin
     await expect.poll(() => page.getByTestId("error").textContent()).toContain("at least one enabled admin");

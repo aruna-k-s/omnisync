@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { generateKeyPair } from "@omnisync/protocol";
 import { checkpointHash, signCheckpoint, entryHash, hashBytes, ledgerSignerFromKeyPair, checkpointObjectKey, ZERO_HASH } from "@omnisync/crypto";
-import { MemoryObjectStore, type LedgerStore, type PgDocumentStore } from "@omnisync/store";
+import { MemoryObjectStore, type LedgerStore, type ObjectStore, type PgDocumentStore } from "@omnisync/store";
 import { FaultyObjectStore } from "@omnisync/store/testing";
 import { verifyLedger, type Report, type TrustInputs } from "@omnisync/verifier";
 import { CheckpointWriter, exportLedger, type GatewayClient } from "../src/index.js";
@@ -327,6 +327,54 @@ describe.each(kinds)("ledger end to end on %s store", (kind) => {
       await w.flush();
       expect((await (world.rawStore as unknown as LedgerStore).lastCheckpoint())?.n).toBe(1);
       expect(w.stats.written).toBe(1);
+    });
+
+    it("another writer's different bytes that appear between our look and our write are not overwritten", async () => {
+      await setup();
+      await edit();
+      const key = checkpointObjectKey("acme", 1);
+      let planted = false;
+      const plant = async (): Promise<boolean> => {
+        if (planted) return false;
+        planted = true;
+        await checkpointObjects.put(key, new Uint8Array([9, 9, 9]));
+        return true;
+      };
+      // Another writer's object lands just as we make our first move, whichever that is: a look-then-write upload
+      // would see "absent" and then overwrite it.
+      const racy: ObjectStore = {
+        put: async (k, b) => {
+          await plant();
+          return checkpointObjects.put(k, b);
+        },
+        putIfAbsent: async (k, b) => {
+          await plant();
+          return checkpointObjects.putIfAbsent(k, b);
+        },
+        delete: (k) => checkpointObjects.delete(k),
+        get: async (k) => ((await plant()) ? undefined : checkpointObjects.get(k)),
+      };
+      const w = writer({ objects: racy });
+      await w.flush();
+      expect([...((await checkpointObjects.get(key)) ?? [])]).toEqual([9, 9, 9]);
+      expect(w.stats.uploadConflicts).toBe(1);
+      expect((await (world.rawStore as unknown as LedgerStore).lastCheckpoint())?.uploadedAtMs).toBeUndefined();
+    });
+
+    it("an object reported present that cannot be read is a failed upload, retried later, not a success", async () => {
+      await setup();
+      await edit();
+      const odd: ObjectStore = {
+        put: (k, b) => checkpointObjects.put(k, b),
+        putIfAbsent: async () => false,
+        delete: (k) => checkpointObjects.delete(k),
+        get: async () => undefined,
+      };
+      const w = writer({ objects: odd });
+      await w.flush();
+      expect(w.stats.uploadFailures).toBe(1);
+      expect(w.stats.uploaded).toBe(0);
+      expect((await (world.rawStore as unknown as LedgerStore).lastCheckpoint())?.uploadedAtMs).toBeUndefined();
     });
 
     it("an identical object already in the bucket counts as uploaded (a crash between put and mark)", async () => {

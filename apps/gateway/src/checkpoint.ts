@@ -192,14 +192,20 @@ export class CheckpointWriter {
   async #upload(n: number, bytes: Uint8Array): Promise<boolean> {
     try {
       const key = checkpointObjectKey(this.#o.tenant, n);
-      const existing = await withTimeout(this.#o.objects.get(key), this.#o.objectTimeoutMs, "checkpoint lookup");
-      if (existing !== undefined && Buffer.compare(existing, bytes) !== 0) {
-        // Someone else wrote this number. Overwriting would destroy evidence; stop and let a human look.
-        this.stats.uploadConflicts++;
-        this.#o.log("checkpoint_upload_conflict", { n });
-        return false;
+      // One atomic step: create the object only if nothing is there. A separate look-then-write would leave a gap in
+      // which another writer's different bytes could be overwritten.
+      const created = await withTimeout(this.#o.objects.putIfAbsent(key, bytes), this.#o.objectTimeoutMs, "checkpoint upload");
+      if (!created) {
+        const existing = await withTimeout(this.#o.objects.get(key), this.#o.objectTimeoutMs, "checkpoint lookup");
+        if (existing === undefined) throw new Error("checkpoint object reported present but cannot be read");
+        if (Buffer.compare(existing, bytes) !== 0) {
+          // Someone else wrote this number. Overwriting would destroy evidence; stop and let a human look.
+          this.stats.uploadConflicts++;
+          this.#o.log("checkpoint_upload_conflict", { n });
+          return false;
+        }
+        // Identical bytes: an earlier attempt already uploaded this checkpoint (a crash before it was marked).
       }
-      if (existing === undefined) await withTimeout(this.#o.objects.put(key, bytes), this.#o.objectTimeoutMs, "checkpoint upload");
       await this.#o.store.markCheckpointUploaded(n, this.#o.now());
       this.stats.uploaded++;
       this.stats.lastUploadedAtMs = this.#o.now();

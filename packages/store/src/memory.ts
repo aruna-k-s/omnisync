@@ -1,4 +1,5 @@
 import { ZERO_HASH, byIdBytes, chainFields, reservationIsConsistent, validateBatch } from "./ledger.js";
+import { assertObjectKey } from "./object-key.js";
 import type {
   AppendResult,
   DocumentStore,
@@ -178,14 +179,24 @@ export class MemoryObjectStore implements ObjectStore {
   readonly objects = new Map<string, Uint8Array>();
 
   async put(key: string, bytes: Uint8Array): Promise<void> {
+    assertObjectKey(key);
     this.objects.set(key, bytes.slice());
   }
 
+  async putIfAbsent(key: string, bytes: Uint8Array): Promise<boolean> {
+    assertObjectKey(key);
+    if (this.objects.has(key)) return false;
+    this.objects.set(key, bytes.slice());
+    return true;
+  }
+
   async get(key: string): Promise<Uint8Array | undefined> {
+    assertObjectKey(key);
     return this.objects.get(key)?.slice();
   }
 
   async delete(key: string): Promise<void> {
+    assertObjectKey(key);
     this.objects.delete(key);
   }
 }

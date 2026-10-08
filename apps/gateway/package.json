@@ -20,18 +20,19 @@
     "export": "node dist/export-cli.js"
   },
   "dependencies": {
+    "@omnisync/crypto": "workspace:*",
     "@omnisync/engine": "workspace:*",
     "@omnisync/protocol": "workspace:*",
-    "ws": "^8.22.0",
-    "yjs": "^13.6.33",
     "@omnisync/store": "workspace:*",
-    "@omnisync/crypto": "workspace:*",
-    "@omnisync/verifier": "workspace:*"
+    "@omnisync/verifier": "workspace:*",
+    "ws": "^8.22.0",
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "^3.1147.0",
     "@omnisync/config": "workspace:*",
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
-    "pg": "^8.23.1",
-    "@types/pg": "^8.23.1"
+    "pg": "^8.23.1"
   }
 }
