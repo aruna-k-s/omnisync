@@ -1,0 +1,113 @@
+{{- $f := include "omnisync.fullname" . }}
+{{- $secret := .Values.secrets.existingSecret }}
+{{- $ctx := dict "root" . "component" "control-plane" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $f }}-control-plane
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $f }}-control-plane
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "omnisync.selectorLabels" $ctx | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $f }}-control-plane
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+spec:
+  replicas: {{ .Values.controlPlane.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels:
+      {{- include "omnisync.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "omnisync.labels" $ctx | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ $f }}-control-plane
+      automountServiceAccountToken: false
+      {{- include "omnisync.pullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "omnisync.podSecurityContext" (dict "uid" 10001) | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      {{- include "omnisync.scheduling" . | nindent 6 }}
+      containers:
+        - name: control-plane
+          image: {{ include "omnisync.image" (dict "root" . "name" .Values.image.controlPlane) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 8081, protocol: TCP }
+          env:
+            - { name: PORT, value: "8081" }
+            - { name: OMNISYNC_OIDC_ISSUER, value: {{ .Values.oidc.issuer | quote }} }
+            - { name: OMNISYNC_OIDC_CLIENT_ID, value: {{ .Values.oidc.clientId | quote }} }
+            - { name: OMNISYNC_OIDC_REDIRECT_URI, value: {{ printf "%s/v1/auth/callback" (include "omnisync.origin" .Values.hosts.api) | quote }} }
+            - { name: OMNISYNC_ISSUER_KEY_FILE, value: /secrets/issuer-key }
+            - { name: OMNISYNC_ADMIN_EMAILS, value: {{ join "," .Values.adminEmails | quote }} }
+            - { name: OMNISYNC_RETURN_TO, value: {{ printf "%s,%s" (include "omnisync.pageUrl" .Values.hosts.console) (include "omnisync.pageUrl" .Values.hosts.app) | quote }} }
+            - { name: OMNISYNC_DEVICE_VERIFICATION_URL, value: {{ include "omnisync.pageUrl" .Values.hosts.app | quote }} }
+            - { name: OMNISYNC_TENANT, value: {{ .Values.tenant | quote }} }
+            - { name: OMNISYNC_LEDGER_PUBLIC_KEY, value: {{ .Values.publicKeys.ledger | quote }} }
+            # The ingress controller is the one proxy in front of this pod (network policy allows nothing else), so
+            # believe one hop: without it every client shares the controller's address and its rate-limit bucket.
+            - { name: OMNISYNC_TRUST_PROXY, value: "1" }
+            {{- include "omnisync.secretEnv" (dict "env" "DATABASE_URL" "secret" $secret "key" "database-url" "optional" false) | nindent 12 }}
+            {{- include "omnisync.secretEnv" (dict "env" "OMNISYNC_SESSION_SECRET" "secret" $secret "key" "session-secret" "optional" false) | nindent 12 }}
+            {{- include "omnisync.secretEnv" (dict "env" "OMNISYNC_OIDC_CLIENT_SECRET" "secret" $secret "key" "oidc-client-secret" "optional" true) | nindent 12 }}
+            {{- with .Values.controlPlane.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+            failureThreshold: 40
+          resources:
+            {{- toYaml .Values.controlPlane.resources | nindent 12 }}
+          securityContext:
+            {{- include "omnisync.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: secrets, mountPath: /secrets, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: secrets
+          secret:
+            secretName: {{ $secret }}
+            defaultMode: 288 # 0440: readable by the pod's group only
+            items:
+              - { key: issuer-key, path: issuer-key }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }

@@ -1,0 +1,188 @@
+{{- if .Values.minio.enabled }}
+{{- $f := include "omnisync.fullname" . }}
+{{- $m := .Values.minio }}
+{{- $secret := .Values.secrets.existingSecret }}
+{{- $ctx := dict "root" . "component" "minio" }}
+{{- $setup := dict "root" . "component" "minio-setup" }}
+# The gateway user may read and write objects and read bucket settings. It has no delete action of any kind, on either
+# bucket: with versioning a plain delete only adds a marker, and the checkpoint bucket's whole point is that nothing
+# the gateway can do removes a checkpoint.
+{{- $policy := dict "Version" "2012-10-17" "Statement" (list (dict "Effect" "Allow" "Action" (list "s3:GetObject" "s3:PutObject" "s3:GetObjectRetention" "s3:PutObjectRetention" "s3:GetObjectVersion" "s3:ListBucket" "s3:GetBucketLocation" "s3:GetBucketVersioning" "s3:GetBucketObjectLockConfiguration") "Resource" (list (printf "arn:aws:s3:::%s" .Values.storage.snapshot.bucket) (printf "arn:aws:s3:::%s/*" .Values.storage.snapshot.bucket) (printf "arn:aws:s3:::%s" .Values.storage.checkpoint.bucket) (printf "arn:aws:s3:::%s/*" .Values.storage.checkpoint.bucket)))) }}
+{{- /* The setup Job is an ordinary resource (a post-install hook would wait for a gateway that cannot be ready until the Job has run, and deadlock `helm install --wait`). Its name carries a hash of its inputs: a Job's pod template cannot be edited, so a change makes a new Job. */}}
+{{- $setupHash := printf "%s|%s|%s|%s|%s" $m.mcImage .Values.storage.snapshot.bucket .Values.storage.checkpoint.bucket (toJson $policy) .Chart.Version | sha256sum | trunc 8 }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $f }}-minio
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $f }}-minio-setup
+  labels:
+    {{- include "omnisync.labels" $setup | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $f }}-minio-policy
+  labels:
+    {{- include "omnisync.labels" $setup | nindent 4 }}
+data:
+  gateway-policy.json: {{ toJson $policy | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $f }}-minio
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+      protocol: TCP
+  selector:
+    {{- include "omnisync.selectorLabels" $ctx | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $f }}-minio
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ $f }}-minio
+  selector:
+    matchLabels:
+      {{- include "omnisync.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "omnisync.labels" $ctx | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $f }}-minio
+      automountServiceAccountToken: false
+      {{- include "omnisync.pullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "omnisync.podSecurityContext" (dict "uid" 10001) | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      {{- include "omnisync.scheduling" . | nindent 6 }}
+      containers:
+        - name: minio
+          image: {{ $m.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["server", "/data", "--address", ":9000", "--config-dir", "/tmp/minio-config"]
+          ports:
+            - { name: s3, containerPort: 9000, protocol: TCP }
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: MINIO_BROWSER, value: "off" }
+            - { name: MINIO_UPDATE, value: "off" }
+            {{- include "omnisync.secretEnv" (dict "env" "MINIO_ROOT_USER" "secret" $secret "key" "minio-root-user" "optional" false) | nindent 12 }}
+            {{- include "omnisync.secretEnv" (dict "env" "MINIO_ROOT_PASSWORD" "secret" $secret "key" "minio-root-password" "optional" false) | nindent 12 }}
+          livenessProbe:
+            httpGet: { path: /minio/health/live, port: s3 }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /minio/health/ready, port: s3 }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet: { path: /minio/health/live, port: s3 }
+            periodSeconds: 3
+            failureThreshold: 40
+          resources:
+            {{- toYaml $m.resources | nindent 12 }}
+          securityContext:
+            {{- include "omnisync.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- if $m.persistence.storageClass }}
+        storageClassName: {{ $m.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $m.persistence.size }}
+---
+# Creates the buckets (versioned; the checkpoint bucket with Object Lock) and the gateway user, whose name and secret are
+# the Secret's s3-access-key-id and s3-secret-access-key. Every step is idempotent. The gateway restarts until it has run.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $f }}-minio-setup-{{ $setupHash }}
+  labels:
+    {{- include "omnisync.labels" $setup | nindent 4 }}
+spec:
+  backoffLimit: 30
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "omnisync.labels" $setup | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ $f }}-minio-setup
+      automountServiceAccountToken: false
+      {{- include "omnisync.pullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "omnisync.podSecurityContext" (dict "uid" 10001) | nindent 8 }}
+      {{- include "omnisync.scheduling" . | nindent 6 }}
+      containers:
+        - name: setup
+          image: {{ $m.mcImage }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-ec"]
+          args:
+            - |
+              export MC_CONFIG_DIR=/tmp/mc
+              until mc alias set local "http://{{ $f }}-minio:9000" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+                echo "waiting for MinIO"; sleep 3
+              done
+              mc mb --ignore-existing local/{{ .Values.storage.snapshot.bucket }}
+              mc version enable local/{{ .Values.storage.snapshot.bucket }}
+              mc mb --ignore-existing --with-lock local/{{ .Values.storage.checkpoint.bucket }}
+              mc version enable local/{{ .Values.storage.checkpoint.bucket }}
+              mc admin policy create local omnisync-gateway /policy/gateway-policy.json
+              mc admin user add local "$GATEWAY_ACCESS_KEY" "$GATEWAY_SECRET_KEY"
+              mc admin policy attach local omnisync-gateway --user "$GATEWAY_ACCESS_KEY" || true
+              echo "buckets and gateway user ready"
+          env:
+            {{- include "omnisync.secretEnv" (dict "env" "MINIO_ROOT_USER" "secret" $secret "key" "minio-root-user" "optional" false) | nindent 12 }}
+            {{- include "omnisync.secretEnv" (dict "env" "MINIO_ROOT_PASSWORD" "secret" $secret "key" "minio-root-password" "optional" false) | nindent 12 }}
+            {{- include "omnisync.secretEnv" (dict "env" "GATEWAY_ACCESS_KEY" "secret" $secret "key" "s3-access-key-id" "optional" false) | nindent 12 }}
+            {{- include "omnisync.secretEnv" (dict "env" "GATEWAY_SECRET_KEY" "secret" $secret "key" "s3-secret-access-key" "optional" false) | nindent 12 }}
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+          securityContext:
+            {{- include "omnisync.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: policy, mountPath: /policy, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: policy
+          configMap:
+            name: {{ $f }}-minio-policy
+        - name: tmp
+          emptyDir: { sizeLimit: 16Mi }
+{{- end }}

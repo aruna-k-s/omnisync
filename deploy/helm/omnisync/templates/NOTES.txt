@@ -1,0 +1,34 @@
+OmniSync {{ .Chart.AppVersion }} is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Open these once DNS points at your ingress controller and the certificates are issued:
+
+  Console (admin)    https://{{ .Values.hosts.console }}/
+  Reference app      https://{{ .Values.hosts.app }}/
+  Control plane API  https://{{ .Values.hosts.api }}/healthz
+  Gateway            wss://{{ .Values.hosts.gateway }}/
+
+Check it came up:
+
+  kubectl -n {{ .Release.Namespace }} get pods
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "omnisync.fullname" . }}-gateway
+
+Your identity provider must allow this redirect URI for client "{{ .Values.oidc.clientId }}":
+
+  https://{{ .Values.hosts.api }}/v1/auth/callback
+
+Checkpoints are locked ({{ .Values.storage.checkpoint.lockMode }}) for {{ .Values.storage.checkpoint.retainDays }} days in bucket "{{ .Values.storage.checkpoint.bucket }}".
+{{- if eq (upper .Values.storage.checkpoint.lockMode) "COMPLIANCE" }}
+That cannot be shortened by anyone, including you.
+{{- end }}
+{{- if .Values.minio.enabled }}
+
+The bundled MinIO is a single node for evaluation. The gateway restarts until its setup Job has created the buckets; that takes a minute.
+{{- end }}
+{{- if .Values.postgresql.bundled.enabled }}
+
+The bundled PostgreSQL has no backups and no high availability. Use your own database for anything you care about.
+{{- end }}
+{{- if gt (int .Values.controlPlane.replicas) 1 }}
+
+The control plane has {{ .Values.controlPlane.replicas }} replicas: its rate limits are per process, so the allowance is multiplied.
+{{- end }}

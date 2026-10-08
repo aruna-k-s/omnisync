@@ -1,0 +1,226 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $f := include "omnisync.fullname" . }}
+{{- $np := .Values.networkPolicy }}
+{{- $bundledPg := .Values.postgresql.bundled.enabled }}
+{{- $minio := .Values.minio.enabled }}
+{{- $dns := dict "namespaceSelector" (dict "matchLabels" $np.egress.dns.namespaceLabels) "podSelector" (dict "matchLabels" (dict "k8s-app" "kube-dns")) }}
+# Everything OmniSync runs starts from "deny all"; each rule below is one row of the table in docs/specs/deployment.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $f }}-default-deny
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/part-of: omnisync
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $f }}-dns
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/part-of: omnisync
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - {{- toYaml $dns | nindent 10 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# The ingress controller reaches the three things it serves.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $f }}-from-ingress
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [gateway, control-plane, web-console, web-app]
+      - key: app.kubernetes.io/instance
+        operator: In
+        values: [{{ .Release.Name | quote }}]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml $np.ingressController.namespaceLabels | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8081 }
+---
+# gateway -> PostgreSQL and object storage
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $f }}-gateway-egress
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: gateway
+  policyTypes: [Egress]
+  egress:
+    {{- if $bundledPg }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: postgresql
+      ports:
+        - { protocol: TCP, port: 5432 }
+    {{- else }}
+    {{- range $np.egress.postgresql.cidrs }}
+    - to:
+        - ipBlock: { cidr: {{ . | quote }} }
+      ports:
+        - { protocol: TCP, port: {{ $np.egress.postgresql.port }} }
+    {{- end }}
+    {{- end }}
+    {{- if $minio }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: minio
+      ports:
+        - { protocol: TCP, port: 9000 }
+    {{- else }}
+    {{- range $np.egress.s3.cidrs }}
+    - to:
+        - ipBlock: { cidr: {{ . | quote }} }
+      ports:
+        - { protocol: TCP, port: {{ $np.egress.s3.port }} }
+    {{- end }}
+    {{- end }}
+---
+# control plane -> PostgreSQL and the identity provider
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $f }}-control-plane-egress
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: control-plane
+  policyTypes: [Egress]
+  egress:
+    {{- if $bundledPg }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: postgresql
+      ports:
+        - { protocol: TCP, port: 5432 }
+    {{- else }}
+    {{- range $np.egress.postgresql.cidrs }}
+    - to:
+        - ipBlock: { cidr: {{ . | quote }} }
+      ports:
+        - { protocol: TCP, port: {{ $np.egress.postgresql.port }} }
+    {{- end }}
+    {{- end }}
+    {{- range $np.egress.idp.cidrs }}
+    - to:
+        - ipBlock: { cidr: {{ . | quote }} }
+      ports:
+        - { protocol: TCP, port: {{ $np.egress.idp.port }} }
+    {{- end }}
+{{- if $bundledPg }}
+---
+# bundled PostgreSQL accepts the gateway and the control plane only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $f }}-postgresql-ingress
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: postgresql
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [gateway, control-plane]
+              - key: app.kubernetes.io/instance
+                operator: In
+                values: [{{ .Release.Name | quote }}]
+      ports:
+        - { protocol: TCP, port: 5432 }
+{{- end }}
+{{- if $minio }}
+---
+# bundled MinIO accepts the gateway and its setup Job only; the Job reaches it
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $f }}-minio-ingress
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: minio
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [gateway, minio-setup]
+              - key: app.kubernetes.io/instance
+                operator: In
+                values: [{{ .Release.Name | quote }}]
+      ports:
+        - { protocol: TCP, port: 9000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $f }}-minio-setup-egress
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "network-policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: minio-setup
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: minio
+      ports:
+        - { protocol: TCP, port: 9000 }
+{{- end }}
+{{- end }}

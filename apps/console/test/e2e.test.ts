@@ -181,7 +181,9 @@ describe.skipIf(!haveChromium || !haveBuild)("console: SSO login to a verified l
     await page.getByTestId("whoami").waitFor({ timeout: 15_000 });
     const daveId = (await identity().listPrincipals(undefined, 100)).find((p) => p.email === dave.email)?.id as string;
     await identity().disablePrincipal(daveId, Date.now(), { atMs: Date.now(), actor: "system", action: "principal.disable", target: daveId });
-    await page.getByTestId("nav-audit").click(); // the page loads the trail, gets a 401, and signs out
+    // Opening the trail gets a 401 and signs out. A request already in flight can get there first and remove the button
+    // mid-click; that is the same outcome, so a click that loses the race is not a failure.
+    await page.getByTestId("nav-audit").click({ timeout: 5_000 }).catch(() => undefined);
     await expect.poll(() => page.getByTestId("notice").textContent(), { timeout: 10_000 }).toContain("Your session ended");
     expect(await page.getByTestId("whoami").count()).toBe(0);
     await page.getByTestId("signin").waitFor();

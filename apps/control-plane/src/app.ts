@@ -41,7 +41,7 @@ export async function createControlPlane(config: ControlPlaneConfig, deps: Contr
   const oidc = deps.oidc ?? new OpenIdLogin(cfg.oidc, cfg.now);
   const app = await NestFactory.create<NestFastifyApplication>(
     ControlPlaneModule.register(cfg, deps.identity, oidc),
-    new FastifyAdapter({ bodyLimit: 16 * 1024, trustProxy: cfg.trustProxy }),
+    new FastifyAdapter({ bodyLimit: 16 * 1024, trustProxy: fastifyTrustProxy(cfg.trustProxy) }),
     { logger: false },
   );
   app.useGlobalFilters(new ErrorFilter());
@@ -69,4 +69,13 @@ export async function createControlPlane(config: ControlPlaneConfig, deps: Contr
   await app.init();
   await fastify.ready();
   return app;
+}
+
+/**
+ * A hop count becomes a trust function: hop 0 is the socket peer, hop 1 the address before it in X-Forwarded-For, and so on.
+ * (Fastify documents a number, but in the version in use it silently trusts nobody, so the function is spelled out.)
+ */
+function fastifyTrustProxy(t: boolean | number | readonly string[]): boolean | string[] | ((address: string, hop: number) => boolean) {
+  if (typeof t === "number") return (_address: string, hop: number) => hop < t;
+  return typeof t === "object" ? [...t] : t;
 }

@@ -1,0 +1,133 @@
+{{- $f := include "omnisync.fullname" . }}
+{{- $secret := .Values.secrets.existingSecret }}
+{{- $ctx := dict "root" . "component" "gateway" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $f }}-gateway
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $f }}-gateway
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "omnisync.selectorLabels" $ctx | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $f }}-gateway
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  # One writer per document until Phase 4: the old pod drains and writes its final checkpoint before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "omnisync.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "omnisync.labels" $ctx | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ $f }}-gateway
+      automountServiceAccountToken: false
+      {{- include "omnisync.pullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "omnisync.podSecurityContext" (dict "uid" 10001) | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
+      {{- include "omnisync.scheduling" . | nindent 6 }}
+      initContainers:
+        # The gateway refuses a ledger key that group or others can read; Kubernetes hands secret files to the pod's
+        # group. Copy it to a private file (umask 077) in memory-backed storage that only the gateway container mounts.
+        - name: prepare-keys
+          image: {{ include "omnisync.image" (dict "root" . "name" .Values.image.gateway) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "umask 077 && cp /secrets/ledger-key /keys/ledger-key"]
+          securityContext:
+            {{- include "omnisync.containerSecurityContext" . | nindent 12 }}
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 32Mi }
+          volumeMounts:
+            - { name: secrets, mountPath: /secrets, readOnly: true }
+            - { name: keys, mountPath: /keys }
+      containers:
+        - name: gateway
+          image: {{ include "omnisync.image" (dict "root" . "name" .Values.image.gateway) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 8080, protocol: TCP }
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: OMNISYNC_ENGINE, value: {{ .Values.engine | quote }} }
+            - { name: OMNISYNC_TENANT, value: {{ .Values.tenant | quote }} }
+            - { name: OMNISYNC_ISSUER_PUBLIC_KEYS, value: {{ .Values.publicKeys.issuer | quote }} }
+            - { name: OMNISYNC_ALLOWED_ORIGINS, value: {{ printf "%s,%s" (include "omnisync.origin" .Values.hosts.console) (include "omnisync.origin" .Values.hosts.app) | quote }} }
+            - { name: OMNISYNC_LEDGER_KEY_FILE, value: /keys/ledger-key }
+            - { name: OMNISYNC_SNAPSHOT_S3_BUCKET, value: {{ .Values.storage.snapshot.bucket | quote }} }
+            - { name: OMNISYNC_CHECKPOINT_S3_BUCKET, value: {{ .Values.storage.checkpoint.bucket | quote }} }
+            - { name: OMNISYNC_CHECKPOINT_RETAIN_DAYS, value: {{ .Values.storage.checkpoint.retainDays | quote }} }
+            - { name: OMNISYNC_CHECKPOINT_LOCK_MODE, value: {{ .Values.storage.checkpoint.lockMode | quote }} }
+            - { name: OMNISYNC_S3_REGION, value: {{ .Values.storage.s3.region | quote }} }
+            - { name: OMNISYNC_S3_PATH_STYLE, value: {{ ternary "1" "0" (or .Values.minio.enabled .Values.storage.s3.pathStyle) | quote }} }
+            {{- if include "omnisync.s3Endpoint" . }}
+            - { name: OMNISYNC_S3_ENDPOINT, value: {{ include "omnisync.s3Endpoint" . | quote }} }
+            {{- end }}
+            - { name: AWS_EC2_METADATA_DISABLED, value: "true" }
+            {{- include "omnisync.secretEnv" (dict "env" "DATABASE_URL" "secret" $secret "key" "database-url" "optional" false) | nindent 12 }}
+            {{- include "omnisync.secretEnv" (dict "env" "AWS_ACCESS_KEY_ID" "secret" $secret "key" "s3-access-key-id" "optional" false) | nindent 12 }}
+            {{- include "omnisync.secretEnv" (dict "env" "AWS_SECRET_ACCESS_KEY" "secret" $secret "key" "s3-secret-access-key" "optional" false) | nindent 12 }}
+            {{- with .Values.gateway.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+            failureThreshold: 40
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          securityContext:
+            {{- include "omnisync.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: keys, mountPath: /keys, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: secrets
+          secret:
+            secretName: {{ $secret }}
+            defaultMode: 288 # 0440: readable by the pod's group only
+            items:
+              - { key: ledger-key, path: ledger-key }
+        - name: keys
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }

@@ -1,0 +1,68 @@
+{{- if .Values.ingress.enabled }}
+{{- $f := include "omnisync.fullname" . }}
+{{- $tls := .Values.ingress.tlsSecretNames }}
+{{- $web := list (dict "key" "console" "host" .Values.hosts.console "service" (printf "%s-web-console" $f) "port" 8080) (dict "key" "app" "host" .Values.hosts.app "service" (printf "%s-web-app" $f) "port" 8080) }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $f }}
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "ingress") | nindent 4 }}
+  annotations:
+    {{- mergeOverwrite (dict "cert-manager.io/cluster-issuer" .Values.ingress.clusterIssuer) .Values.ingress.annotations .Values.ingress.apiAnnotations | toYaml | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  tls:
+    - hosts: [{{ .Values.hosts.api | quote }}]
+      secretName: {{ default (printf "%s-api-tls" $f) $tls.api }}
+    - hosts: [{{ .Values.hosts.console | quote }}]
+      secretName: {{ default (printf "%s-console-tls" $f) $tls.console }}
+    - hosts: [{{ .Values.hosts.app | quote }}]
+      secretName: {{ default (printf "%s-app-tls" $f) $tls.app }}
+  rules:
+    - host: {{ .Values.hosts.api | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $f }}-control-plane
+                port: { number: 8081 }
+    {{- range $web }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .service }}
+                port: { number: {{ .port }} }
+    {{- end }}
+---
+# The WebSocket host has its own Ingress so that its long timeouts do not apply to the other hosts.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $f }}-gateway
+  labels:
+    {{- include "omnisync.labels" (dict "root" . "component" "ingress") | nindent 4 }}
+  annotations:
+    {{- mergeOverwrite (dict "cert-manager.io/cluster-issuer" .Values.ingress.clusterIssuer) .Values.ingress.annotations .Values.ingress.gatewayAnnotations | toYaml | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  tls:
+    - hosts: [{{ .Values.hosts.gateway | quote }}]
+      secretName: {{ default (printf "%s-gateway-tls" $f) $tls.gateway }}
+  rules:
+    - host: {{ .Values.hosts.gateway | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $f }}-gateway
+                port: { number: 8080 }
+{{- end }}

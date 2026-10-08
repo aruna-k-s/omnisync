@@ -1,0 +1,106 @@
+{{- if .Values.postgresql.bundled.enabled }}
+{{- $f := include "omnisync.fullname" . }}
+{{- $pg := .Values.postgresql.bundled }}
+{{- $ctx := dict "root" . "component" "postgresql" }}
+# Evaluation only: one pod, no backups, no tuning. A real install points database-url at your own PostgreSQL.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $f }}-postgresql
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $f }}-postgresql
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+  selector:
+    {{- include "omnisync.selectorLabels" $ctx | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $f }}-postgresql
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ $f }}-postgresql
+  selector:
+    matchLabels:
+      {{- include "omnisync.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "omnisync.labels" $ctx | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $f }}-postgresql
+      automountServiceAccountToken: false
+      {{- include "omnisync.pullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "omnisync.podSecurityContext" (dict "uid" 999) | nindent 8 }}
+      terminationGracePeriodSeconds: 60
+      {{- include "omnisync.scheduling" . | nindent 6 }}
+      containers:
+        - name: postgresql
+          image: {{ $pg.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { name: postgresql, containerPort: 5432, protocol: TCP }
+          env:
+            - { name: POSTGRES_DB, value: {{ $pg.database | quote }} }
+            - { name: POSTGRES_USER, value: {{ $pg.user | quote }} }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            {{- include "omnisync.secretEnv" (dict "env" "POSTGRES_PASSWORD" "secret" .Values.secrets.existingSecret "key" "postgres-password" "optional" false) | nindent 12 }}
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 3
+            failureThreshold: 60
+          resources:
+            {{- toYaml $pg.resources | nindent 12 }}
+          securityContext:
+            {{- include "omnisync.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: run
+          emptyDir: { sizeLimit: 1Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- if $pg.storageClass }}
+        storageClassName: {{ $pg.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $pg.storage }}
+{{- end }}

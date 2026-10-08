@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import type { CertificateSigner } from "@omnisync/crypto";
 
 export interface OidcConfig {
@@ -41,8 +42,12 @@ export interface ControlPlaneConfig {
   adminEmails?: readonly string[];
   /** Clock; injectable for tests. */
   now?: () => number;
-  /** Trust X-Forwarded-For from a reverse proxy when deciding the client IP for rate limiting. */
-  trustProxy?: boolean;
+  /**
+   * Which proxies in front of the control plane to believe about the client address (X-Forwarded-For), which the rate
+   * limits are keyed on. A hop count (1 = one proxy, the ingress), or the addresses/CIDR ranges of the proxies. `true`
+   * (believe anyone) is deliberately not accepted by `parseTrustProxy`. Default: none, the socket peer is the client.
+   */
+  trustProxy?: boolean | number | readonly string[];
   /** Login starts allowed per client IP: burst and sustained per minute (default 20 and 20). */
   loginRateLimit?: { burst: number; perMinute: number };
   /**
@@ -74,7 +79,7 @@ export interface ResolvedConfig {
   certMinLifetimeMs: number;
   adminEmails: ReadonlySet<string>;
   now: () => number;
-  trustProxy: boolean;
+  trustProxy: boolean | number | readonly string[];
   loginRateLimit: { burst: number; perMinute: number };
   returnTo: ReadonlySet<string>;
   ledger?: LedgerAdminConfig & { maxExportBytes: number };
@@ -94,6 +99,36 @@ function checkReturnTo(raw: string): string {
   // The session is appended as a fragment; an entry with its own fragment would be ambiguous.
   if (u.hash || raw.includes("#")) throw new Error(`returnTo must not contain a fragment: ${raw}`);
   return raw;
+}
+
+/**
+ * Reads OMNISYNC_TRUST_PROXY: unset or empty means no proxy is trusted; "1" to "5" is a number of proxy hops; otherwise
+ * a comma separated list of proxy addresses or CIDR ranges. Trusting every address (a /0 range, `true`) is refused,
+ * because then any client could choose the address its rate limit is counted on. Messages never repeat the value.
+ */
+export function parseTrustProxy(raw: string | undefined): false | number | string[] {
+  const v = (raw ?? "").trim();
+  if (v === "" || v === "0") return false;
+  const bad = (): never => {
+    throw new Error("OMNISYNC_TRUST_PROXY must be a number of proxy hops (1-5) or a comma separated list of proxy addresses or CIDR ranges (a /0 range is refused)");
+  };
+  if (/^\d+$/.test(v)) {
+    const n = Number(v);
+    return n >= 1 && n <= 5 ? n : bad();
+  }
+  const out: string[] = [];
+  for (const part of v.split(",")) {
+    const item = part.trim();
+    const m = /^([0-9a-fA-F:.]+)(?:\/(\d{1,3}))?$/.exec(item);
+    const family = m ? isIP(m[1] as string) : 0;
+    if (!m || family === 0) return bad();
+    if (m[2] !== undefined) {
+      const bits = Number(m[2]);
+      if (bits < 1 || bits > (family === 4 ? 32 : 128)) return bad();
+    }
+    out.push(item);
+  }
+  return out;
 }
 
 export function resolveConfig(c: ControlPlaneConfig): ResolvedConfig {

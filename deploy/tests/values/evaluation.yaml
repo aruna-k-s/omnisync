@@ -1,0 +1,12 @@
+# Everything bundled: what the install script produces for an evaluation.
+tenant: acme
+hosts: { api: api.acme.test, gateway: sync.acme.test, console: console.acme.test, app: app.acme.test }
+adminEmails: [admin@acme.test]
+oidc: { issuer: "https://idp.acme.test", clientId: omnisync }
+publicKeys:
+  issuer: "1111111111111111111111111111111111111111111111111111111111111111"
+  ledger: "2222222222222222222222222222222222222222222222222222222222222222"
+storage:
+  checkpoint: { retainDays: 1, lockMode: GOVERNANCE }
+postgresql: { bundled: { enabled: true } }
+minio: { enabled: true }

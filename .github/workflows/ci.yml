@@ -35,6 +35,8 @@ jobs:
       # The S3 adapter and Object Lock tests run against an S3-compatible server (moto) started below.
       OMNISYNC_TEST_S3_ENDPOINT: http://127.0.0.1:54330
       OMNISYNC_REQUIRE_S3: "1"
+      # A missing Chromium or app build fails the browser tests instead of skipping them.
+      OMNISYNC_REQUIRE_BROWSER: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -49,10 +51,85 @@ jobs:
           nohup moto_server -H 127.0.0.1 -p 54330 > moto.log 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:54330/moto-api/ >/dev/null && exit 0; sleep 1; done
           cat moto.log; exit 1
+      - name: Install Chromium for the browser tests
+        run: pnpm --filter @omnisync/sdk exec playwright-core install --with-deps chromium
       - run: pnpm lint
       - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm test
+
+  # Chart, images and the pieces of the install path that do not need a cluster. Real Helm is the authority here: the
+  # Python renderer under deploy/tools is a preflight for environments where Helm cannot be downloaded.
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: omnisync
+          POSTGRES_PASSWORD: omnisync
+          POSTGRES_DB: omnisync_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U omnisync"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      OMNISYNC_TEST_DATABASE_URL: postgres://omnisync:omnisync@localhost:5432/omnisync_test
+      OMNISYNC_TEST_S3_ENDPOINT: http://127.0.0.1:54330
+      OMNISYNC_REQUIRE_KUBECONFORM: "1"
+      OMNISYNC_REQUIRE_DEPLOYED: "1"
+      OMNISYNC_REQUIRE_BROWSER: "1"
+      KUBECONFORM_VERSION: v0.6.7
+      HADOLINT_VERSION: v2.12.0
+      CRDS: https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.6
+      - run: pnpm install --frozen-lockfile
+      - name: Tools
+        run: |
+          pip install 'moto[server]==5.2.3' pyyaml==6.0.3 jsonschema==4.26.0 playwright==1.56.0
+          playwright install --with-deps chromium
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar -xz -C /usr/local/bin kubeconform
+          curl -sSfL -o /usr/local/bin/hadolint "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-Linux-x86_64"
+          chmod +x /usr/local/bin/hadolint
+          nohup moto_server -H 127.0.0.1 -p 54330 > moto.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:54330/moto-api/ >/dev/null && exit 0; sleep 1; done
+          cat moto.log; exit 1
+      - name: Dockerfile
+        run: hadolint deploy/docker/Dockerfile
+      - name: helm lint
+        run: |
+          for v in minimal evaluation production; do
+            helm lint deploy/helm/omnisync --strict -f deploy/tests/values/$v.yaml
+          done
+      - name: helm template | kubeconform
+        run: |
+          for v in minimal evaluation production; do
+            helm template omnisync deploy/helm/omnisync -n omnisync -f deploy/tests/values/$v.yaml \
+              | kubeconform -strict -summary -kubernetes-version 1.31.0 -schema-location default -schema-location "$CRDS"
+          done
+      - name: Helm and the Python renderer must render the same objects
+        run: |
+          for v in minimal evaluation production; do
+            helm template omnisync deploy/helm/omnisync -n omnisync -f deploy/tests/values/$v.yaml > /tmp/helm-$v.yaml
+            python3 deploy/tools/render_chart.py deploy/helm/omnisync -f deploy/tests/values/$v.yaml > /tmp/py-$v.yaml
+            python3 deploy/tools/compare_manifests.py /tmp/helm-$v.yaml /tmp/py-$v.yaml
+          done
+      - run: pnpm build
+      - run: pnpm test:deploy
+        env:
+          OMNISYNC_KUBECONFORM: /usr/local/bin/kubeconform
 
   bench-smoke:
     runs-on: ubuntu-latest

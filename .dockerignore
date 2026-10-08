@@ -1,0 +1,10 @@
+**/node_modules
+**/dist
+**/.angular
+.git
+.github
+bench/results
+docs
+deploy/helm
+*.whl
+.omnisync-data

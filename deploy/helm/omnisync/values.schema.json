@@ -1,0 +1,727 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenant",
+    "hosts",
+    "adminEmails",
+    "oidc",
+    "publicKeys",
+    "storage"
+  ],
+  "properties": {
+    "nameOverride": {
+      "type": "string",
+      "maxLength": 40,
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$|^$"
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        },
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "gateway": {
+          "type": "string",
+          "minLength": 1
+        },
+        "controlPlane": {
+          "type": "string",
+          "minLength": 1
+        },
+        "web": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "tenant": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "at most 64 bytes; ASCII keeps that true"
+    },
+    "hosts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "api",
+        "gateway",
+        "console",
+        "app"
+      ],
+      "properties": {
+        "api": {
+          "type": "string",
+          "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$",
+          "description": "a DNS name",
+          "maxLength": 253
+        },
+        "gateway": {
+          "type": "string",
+          "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$",
+          "description": "a DNS name",
+          "maxLength": 253
+        },
+        "console": {
+          "type": "string",
+          "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$",
+          "description": "a DNS name",
+          "maxLength": 253
+        },
+        "app": {
+          "type": "string",
+          "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$",
+          "description": "a DNS name",
+          "maxLength": 253
+        }
+      }
+    },
+    "adminEmails": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+      }
+    },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issuer",
+        "clientId"
+      ],
+      "properties": {
+        "issuer": {
+          "type": "string",
+          "pattern": "^https://[^\\s/]+(/\\S*)?$"
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "publicKeys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issuer",
+        "ledger"
+      ],
+      "properties": {
+        "issuer": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "64 lowercase hex characters"
+        },
+        "ledger": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "64 lowercase hex characters"
+        }
+      }
+    },
+    "engine": {
+      "enum": [
+        "yjs",
+        "automerge",
+        "loro"
+      ]
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": {
+          "type": "string",
+          "minLength": 1
+        },
+        "externalSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "apiVersion": {
+              "type": "string"
+            },
+            "refreshInterval": {
+              "type": "string"
+            },
+            "secretStoreRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "SecretStore",
+                    "ClusterSecretStore"
+                  ]
+                }
+              }
+            },
+            "remoteKeys": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "properties": {
+              "secretStoreRef": {
+                "properties": {
+                  "name": {
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              },
+              "remoteKeys": {
+                "minProperties": 1
+              }
+            },
+            "required": [
+              "secretStoreRef",
+              "remoteKeys"
+            ]
+          }
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkpoint"
+      ],
+      "properties": {
+        "s3": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "pattern": "^$|^https?://[^\\s/@]+(:\\d+)?$"
+            },
+            "region": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{1,29}$"
+            },
+            "pathStyle": {
+              "type": "boolean"
+            }
+          }
+        },
+        "snapshot": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bucket": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+            }
+          }
+        },
+        "checkpoint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "retainDays"
+          ],
+          "properties": {
+            "bucket": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+            },
+            "retainDays": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 36500,
+              "description": "required: days each checkpoint stays locked"
+            },
+            "lockMode": {
+              "enum": [
+                "COMPLIANCE",
+                "GOVERNANCE"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "postgresql": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bundled": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": ":[^:/]+$|@sha256:[0-9a-f]{64}$",
+              "not": {
+                "pattern": ":latest$"
+              }
+            },
+            "storage": {
+              "type": "string"
+            },
+            "storageClass": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+            },
+            "user": {
+              "type": "string",
+              "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+            },
+            "resources": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requests": {
+                  "type": "object"
+                },
+                "limits": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "requests",
+                "limits"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "minio": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ":[^:/]+$|@sha256:[0-9a-f]{64}$",
+          "not": {
+            "pattern": ":latest$"
+          }
+        },
+        "mcImage": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ":[^:/]+$|@sha256:[0-9a-f]{64}$",
+          "not": {
+            "pattern": ":latest$"
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "size": {
+              "type": "string"
+            },
+            "storageClass": {
+              "type": "string"
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requests",
+            "limits"
+          ]
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "clusterIssuer": {
+          "type": "string"
+        },
+        "tlsSecretNames": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "api": {
+              "type": "string"
+            },
+            "gateway": {
+              "type": "string"
+            },
+            "console": {
+              "type": "string"
+            },
+            "app": {
+              "type": "string"
+            }
+          }
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "gatewayAnnotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "apiAnnotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "ingressController": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "namespaceLabels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "egress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "postgresql": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            },
+            "s3": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            },
+            "idp": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "cidrs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            },
+            "dns": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "namespaceLabels": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1,
+          "description": "one writer per document until Phase 4"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 600
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requests",
+            "limits"
+          ]
+        },
+        "extraEnv": {
+          "type": "array"
+        }
+      }
+    },
+    "controlPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requests",
+            "limits"
+          ]
+        },
+        "extraEnv": {
+          "type": "array"
+        }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests": {
+              "type": "object"
+            },
+            "limits": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requests",
+            "limits"
+          ]
+        }
+      }
+    },
+    "podAnnotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "nodeSelector": {
+      "type": "object"
+    },
+    "tolerations": {
+      "type": "array"
+    },
+    "affinity": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "networkPolicy": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "postgresql": {
+            "properties": {
+              "bundled": {
+                "properties": {
+                  "enabled": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "networkPolicy": {
+            "properties": {
+              "egress": {
+                "properties": {
+                  "postgresql": {
+                    "properties": {
+                      "cidrs": {
+                        "minItems": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "networkPolicy": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "minio": {
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "networkPolicy": {
+            "properties": {
+              "egress": {
+                "properties": {
+                  "s3": {
+                    "properties": {
+                      "cidrs": {
+                        "minItems": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

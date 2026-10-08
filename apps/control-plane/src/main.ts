@@ -4,7 +4,7 @@ import { signerFromKeyPair } from "@omnisync/crypto";
 import { MemoryIdentityStore, PgDocumentStore, PgIdentityStore, migrate, type IdentityStore } from "@omnisync/store";
 import { exportLedger } from "@omnisync/gateway";
 import { createControlPlane } from "./app.js";
-import type { LedgerAdminConfig } from "./config.js";
+import { parseTrustProxy, type LedgerAdminConfig } from "./config.js";
 
 /**
  * Configuration comes from the environment; nothing secret is logged.
@@ -17,6 +17,8 @@ import type { LedgerAdminConfig } from "./config.js";
  *   OMNISYNC_DEVICE_VERIFICATION_URL
  *                              turns on device-code login (command line, build agents); the web page where a person approves
  *                              a device. Must also be listed in OMNISYNC_RETURN_TO
+ *   OMNISYNC_TRUST_PROXY       how many proxies (1-5) or which proxy addresses/CIDRs to believe about the client address. Set it behind an
+ *                              ingress: otherwise every client shares the ingress controller's rate-limit bucket. Default: none
  *   OMNISYNC_TENANT, OMNISYNC_LEDGER_PUBLIC_KEY (hex)
  *                              with DATABASE_URL: enable the admin API's ledger routes (trust keys and export)
  */
@@ -57,6 +59,7 @@ const app = await createControlPlane(
     },
     issuer: signerFromKeyPair(issuerKey),
     sessionSecret: hexToBytes(need("OMNISYNC_SESSION_SECRET")),
+    trustProxy: parseTrustProxy(process.env["OMNISYNC_TRUST_PROXY"]),
     adminEmails: (process.env["OMNISYNC_ADMIN_EMAILS"] ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     returnTo: (process.env["OMNISYNC_RETURN_TO"] ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     ...(deviceVerificationUrl ? { deviceLogin: { verificationUrl: deviceVerificationUrl } } : {}),

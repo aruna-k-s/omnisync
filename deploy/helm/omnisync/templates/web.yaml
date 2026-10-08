@@ -1,0 +1,122 @@
+{{- $f := include "omnisync.fullname" . }}
+{{- $apps := list (dict "name" "console" "dir" "console" "host" .Values.hosts.console) (dict "name" "app" "dir" "app" "host" .Values.hosts.app) }}
+{{- range $apps }}
+{{- $component := printf "web-%s" .name }}
+{{- $ctx := dict "root" $ "component" $component }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $f }}-{{ $component }}
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+data:
+  # The image holds no environment-specific file: where the control plane and gateway are is configuration.
+  config.json: |
+    {"controlPlane": {{ include "omnisync.origin" $.Values.hosts.api | quote }}, "gateway": {{ printf "wss://%s" $.Values.hosts.gateway | quote }}}
+  default.conf: |
+    server {
+      listen 8080;
+      server_name _;
+      server_tokens off;
+      root /usr/share/nginx/html/{{ .dir }};
+      index index.html;
+
+      location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+      }
+
+      location = /config.json {
+        {{- include "omnisync.web.headers" $ | nindent 8 }}
+        try_files /config.json =404;
+      }
+
+      location / {
+        {{- include "omnisync.web.headers" $ | nindent 8 }}
+        try_files $uri $uri/ /index.html;
+      }
+    }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $f }}-{{ $component }}
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $f }}-{{ $component }}
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "omnisync.selectorLabels" $ctx | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $f }}-{{ $component }}
+  labels:
+    {{- include "omnisync.labels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels:
+      {{- include "omnisync.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "omnisync.labels" $ctx | nindent 8 }}
+      annotations:
+        checksum/config: {{ printf "%s|%s|%s|%s" $.Values.hosts.api $.Values.hosts.gateway .dir .host | sha256sum }}
+        {{- with $.Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $f }}-{{ $component }}
+      automountServiceAccountToken: false
+      {{- include "omnisync.pullSecrets" $ | nindent 6 }}
+      securityContext:
+        {{- include "omnisync.podSecurityContext" (dict "uid" 101) | nindent 8 }}
+      {{- include "omnisync.scheduling" $ | nindent 6 }}
+      containers:
+        - name: web
+          image: {{ include "omnisync.image" (dict "root" $ "name" $.Values.image.web) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 8080, protocol: TCP }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          resources:
+            {{- toYaml $.Values.web.resources | nindent 12 }}
+          securityContext:
+            {{- include "omnisync.containerSecurityContext" $ | nindent 12 }}
+          volumeMounts:
+            - { name: nginx-conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf, readOnly: true }
+            - { name: nginx-conf, mountPath: /usr/share/nginx/html/{{ .dir }}/config.json, subPath: config.json, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: {{ $f }}-{{ $component }}
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+{{- end }}

@@ -6,7 +6,7 @@ Shared instructions for every AI coding assistant working in this repo (Claude C
 
 OmniSync Enterprise: a self-hosted collaboration gateway for regulated companies. Every edit is a signed envelope, every accepted edit is verifiable, and AI agents edit only on shadow branches that a human merges. Product spec and build plan: the "OmniSync Enterprise - Final Product Specification and Build Plan (v4)" doc.
 
-Current phase: **Phase 1 - MVP, week 8 done (console, reference app, command-line login)**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 9 (install path: Helm chart, S3 adapter with Object Lock, signed images and SBOM; needs decision D8; see the plan). Agents and shadow branches start in week 11. Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7), `docs/specs/admin-api.md`, `docs/specs/console.md`, `docs/specs/reference-app.md` and `docs/specs/device-login.md` (week 8), `docs/specs/s3-object-store.md` (week 9a).
+Current phase: **Phase 1 - MVP, week 8 done (console, reference app, command-line login)**. Phase 0 exit gate (design-partner commitment, engine chosen) is the founder's call: see `docs/decisions/0001-engine-choice.md`. Next: week 9 (install path: Helm chart, S3 adapter with Object Lock, signed images and SBOM; needs decision D8; see the plan). Agents and shadow branches start in week 11. Phase-by-phase plan and decision register D1-D11: the OmniSync project Doc. Specs for what is built: `docs/specs/identity.md` (week 5), `docs/specs/ledger.md` (week 6), `docs/specs/engine-structured.md` and `docs/specs/sdk.md` (week 7), `docs/specs/admin-api.md`, `docs/specs/console.md`, `docs/specs/reference-app.md` and `docs/specs/device-login.md` (week 8), `docs/specs/s3-object-store.md` (week 9a), `docs/specs/deployment.md` (week 9b: images and Helm chart).
 
 ## Commands
 
@@ -31,6 +31,7 @@ Current phase: **Phase 1 - MVP, week 8 done (console, reference app, command-lin
 | Demo deployment (in memory, fake IdP) | `pnpm --filter @omnisync/reference-app demo` after building both apps; `/demo/as?u=alice|bob|carol|admin` picks who signs in next |
 | Command-line client | `node apps/cli/dist/main.js login --server <url>` (`whoami`, `logout`); state in `$OMNISYNC_HOME` or `~/.omnisync` |
 | S3 and Object Lock tests | start an S3-compatible server (CI uses `pip install 'moto[server]'; moto_server -p 54330`) and set `OMNISYNC_TEST_S3_ENDPOINT=http://127.0.0.1:54330`; the suites are skipped without it unless `OMNISYNC_REQUIRE_S3=1` (CI sets it) |
+| Chart, images and install-path checks | `pnpm test:deploy` (Python: `pip install pyyaml jsonschema boto3 playwright`; renders `deploy/helm/omnisync` with `deploy/tools/render_chart.py`, runs kubeconform, the pruned-app start test and the web CSP test in Chromium; each skips when its tool or service is missing unless `OMNISYNC_REQUIRE_KUBECONFORM` / `OMNISYNC_REQUIRE_DEPLOYED` / `OMNISYNC_REQUIRE_BROWSER` is `1`, CI sets them and runs real `helm lint` and `helm template` too) |
 | Regenerate protocol vectors | `pnpm --filter @omnisync/protocol vectors` (wire-format break: bump `PROTOCOL_VERSION`) |
 
 Node 22.12+, pnpm 10.
@@ -56,7 +57,7 @@ docs/specs/          one spec per feature, written before code
 docs/decisions/      architecture decision records
 ```
 
-Planned (Phase 1): `packages/agent-sdk`, `deploy/`. `packages/sdk-react` is unused by the apps (the UI stack is Angular).
+`deploy/` holds the Dockerfile (`deploy/docker`), the Helm chart (`deploy/helm/omnisync`), the preflight renderer and manifest comparison (`deploy/tools`) and their tests with three values files (`deploy/tests`). Planned (Phase 1): `packages/agent-sdk`. `packages/sdk-react` is unused by the apps (the UI stack is Angular).
 
 ## Conventions
 
@@ -75,10 +76,11 @@ Changes here are never merged on AI review alone. Ask before editing, and the hu
 - `packages/protocol/src/signing.ts`, `packages/protocol/src/frame.ts`, `packages/protocol/test/vectors.json` (wire format is v2: frames carry sessionId, seq, claimedAtMs and a cert-bound signature)
 - `packages/crypto/**`, `packages/verifier/**`, any ledger code: `packages/store/src/ledger.ts`, `apps/gateway/src/{checkpoint,export}.ts`, migration `003`
 - Gateway authorization, handshake and replay checks in `apps/gateway/src/gateway.ts`
-- `apps/control-plane/src/{service,tokens,oidc,session,config,http,admin,device}.ts`: login (including the `return_to` redirect and the CORS hook in `app.ts`), device-code login, certificate issuance and revocation, admin authorization
+- `apps/control-plane/src/{service,tokens,oidc,session,config,http,admin,device,app,main}.ts`: login (including the `return_to` redirect and the CORS hook in `app.ts`), device-code login, certificate issuance and revocation, admin authorization
 - `packages/store/src/identity*.ts` and migrations `002` and `004` (identity and device-code tables)
 - Durability logic in `apps/gateway/src/room.ts` (write path, snapshot cut, cold load)
 - `apps/gateway/src/{storage-config,ledger-config,serve}.ts`, `packages/store/src/{s3,object-key,fs-object-store,types}.ts`: where checkpoints are written and how they are locked
+- `deploy/helm/omnisync/**` (what is mounted where, which secrets reach which pod, network policy, pod hardening, the MinIO delete-free policy) and `deploy/docker/Dockerfile`
 - `packages/store/migrations/**` and `packages/store/src/pg.ts`: the append-only log. Never edit an applied migration; add a new one
 
 ## Never do

@@ -1,0 +1,38 @@
+# External PostgreSQL and S3, External Secrets, two control-plane replicas, another ingress class, pinned tag.
+tenant: acme
+hosts: { api: api.acme.test, gateway: sync.acme.test, console: console.acme.test, app: app.acme.test }
+adminEmails: [admin@acme.test, cto@acme.test]
+oidc: { issuer: "https://idp.acme.test", clientId: omnisync }
+publicKeys:
+  issuer: "1111111111111111111111111111111111111111111111111111111111111111"
+  ledger: "2222222222222222222222222222222222222222222222222222222222222222"
+engine: loro
+image: { registry: registry.acme.test/omnisync, tag: "1.2.3", pullSecrets: [regcred] }
+secrets:
+  externalSecret:
+    enabled: true
+    secretStoreRef: { name: vault, kind: ClusterSecretStore }
+    remoteKeys:
+      issuer-key: omnisync/issuer-key
+      ledger-key: omnisync/ledger-key
+      session-secret: omnisync/session-secret
+      database-url: omnisync/database-url
+      s3-access-key-id: omnisync/s3-access-key-id
+      s3-secret-access-key: omnisync/s3-secret-access-key
+storage:
+  s3: { endpoint: "https://s3.acme.test", region: eu-central-1, pathStyle: true }
+  snapshot: { bucket: acme-omnisync-snapshots }
+  checkpoint: { bucket: acme-omnisync-checkpoints, retainDays: 2555, lockMode: COMPLIANCE }
+ingress:
+  className: traefik
+  clusterIssuer: acme-ca
+  tlsSecretNames: { api: acme-api-tls }
+controlPlane: { replicas: 2 }
+networkPolicy:
+  ingressController: { namespaceLabels: { kubernetes.io/metadata.name: traefik } }
+  egress:
+    postgresql: { cidrs: ["10.20.0.0/24"], port: 5432 }
+    s3: { cidrs: ["10.30.0.0/24"], port: 443 }
+    idp: { cidrs: ["192.0.2.0/24"] }
+nodeSelector: { disktype: ssd }
+podAnnotations: { team: platform }

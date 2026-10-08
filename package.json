@@ -11,8 +11,9 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test --concurrency=4",
     "lint": "eslint .",
+    "test:deploy": "cd deploy && python3 -W ignore -m unittest discover -s tests -p 'test_*.py'",
     "bench": "pnpm --filter @omnisync/bench run bench",
-    "check": "pnpm lint && pnpm build && pnpm typecheck && pnpm test"
+    "check": "pnpm lint && pnpm build && pnpm typecheck && pnpm test && pnpm test:deploy"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -1,0 +1,144 @@
+# OmniSync Enterprise: chart values. Required values have no default; `values.schema.json` makes helm refuse an install
+# that leaves one out. Nothing secret belongs here: secrets live in a Kubernetes Secret (see `secrets`).
+
+nameOverride: ""
+
+# --- images -------------------------------------------------------------------------------------------------------
+image:
+  registry: ghcr.io/omnisync          # mirror these into your own registry if the cluster cannot reach ghcr.io
+  tag: ""                             # empty = the chart's appVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []                     # names of existing image pull Secrets
+  gateway: omnisync-gateway
+  controlPlane: omnisync-control-plane
+  web: omnisync-web
+
+# --- who and where (required) -------------------------------------------------------------------------------------
+tenant: ""                            # name written into every ledger checkpoint; auditors pin it with `omnisync verify --tenant`
+hosts:                                # four DNS names pointing at your ingress controller
+  api: ""                             # control plane: login, certificates, admin API
+  gateway: ""                         # WebSocket sync
+  console: ""                         # admin console
+  app: ""                             # reference workbook app and the device-approval page
+adminEmails: []                       # people who are organisation admins on first sign-in
+oidc:
+  issuer: ""                          # your identity provider's issuer URL
+  clientId: ""                        # the client secret, if the client has one, goes in the Secret (oidc-client-secret)
+publicKeys:                           # 64 hex characters each; the matching seeds are in the Secret
+  issuer: ""                          # certificate issuer public key (the gateway trusts certificates signed by it)
+  ledger: ""                          # ledger public key (the control plane publishes it to the console and auditors)
+engine: yjs                           # yjs | automerge | loro
+
+# --- secrets ------------------------------------------------------------------------------------------------------
+secrets:
+  # Name of a Secret you create (or External Secrets creates). Keys: issuer-key, ledger-key, session-secret,
+  # database-url, oidc-client-secret (optional), s3-access-key-id, s3-secret-access-key, and for the bundled
+  # services minio-root-user, minio-root-password, postgres-password. See docs/specs/deployment.md.
+  existingSecret: omnisync-secrets
+  externalSecret:                     # let the External Secrets Operator create that Secret
+    enabled: false
+    apiVersion: external-secrets.io/v1beta1
+    refreshInterval: 1h
+    secretStoreRef:
+      name: ""
+      kind: ClusterSecretStore
+    remoteKeys: {}                    # Secret key name -> key in your secret store, for example issuer-key: omnisync/issuer-key
+
+# --- storage ------------------------------------------------------------------------------------------------------
+storage:
+  s3:
+    endpoint: ""                      # empty = AWS S3 (or set it for any S3 service); ignored when minio.enabled
+    region: us-east-1
+    pathStyle: false                  # true for MinIO and most self-hosted services; forced on when minio.enabled
+  snapshot:
+    bucket: omnisync-snapshots
+  checkpoint:
+    bucket: omnisync-checkpoints      # must be created with Object Lock (the bundled MinIO setup does this)
+    retainDays: null                  # REQUIRED, no default: days each checkpoint stays locked (1-36500); compliance mode cannot be shortened
+    lockMode: COMPLIANCE              # COMPLIANCE | GOVERNANCE
+
+postgresql:
+  bundled:                            # evaluation only: single pod, no backups. Production: leave off, put a database-url in the Secret
+    enabled: false
+    image: postgres:16
+    storage: 10Gi
+    storageClass: ""
+    database: omnisync
+    user: omnisync
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: "1", memory: 1Gi }
+
+minio:
+  enabled: false                      # bundled single-node MinIO plus a setup Job; leave off if you have an S3 service
+  image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+  mcImage: minio/mc:RELEASE.2025-08-13T08-35-41Z
+  persistence:
+    size: 20Gi
+    storageClass: ""
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+# --- edge ---------------------------------------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  clusterIssuer: letsencrypt-prod     # cert-manager ClusterIssuer that signs the four host certificates
+  tlsSecretNames: {}                  # optional per-host overrides: {api: my-tls, ...}; default omnisync-<name>-tls
+  # Per-IP throttling at the edge (ingress-nginx annotations; for another controller replace them). Sized for an office
+  # behind one NAT address, so raise them if one address carries many people; the application has its own limits too.
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    nginx.ingress.kubernetes.io/limit-connections: "200"
+  gatewayAnnotations:                 # added to the WebSocket host only
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  apiAnnotations:                     # added to the control plane host only
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+
+networkPolicy:
+  enabled: true
+  ingressController:                  # where your ingress controller runs
+    namespaceLabels:
+      kubernetes.io/metadata.name: ingress-nginx
+  egress:
+    postgresql:                       # used when postgresql.bundled is off
+      cidrs: []
+      port: 5432
+    s3:                               # used when minio is off
+      cidrs: []
+      port: 443
+    idp:                              # the control plane's calls to your identity provider
+      cidrs: ["0.0.0.0/0"]
+      port: 443
+    dns:
+      namespaceLabels:
+        kubernetes.io/metadata.name: kube-system
+
+# --- workloads ----------------------------------------------------------------------------------------------------
+gateway:
+  replicas: 1                         # one writer per document until Phase 4; the schema refuses more
+  terminationGracePeriodSeconds: 60   # time to drain clients and write the final checkpoint
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "2", memory: 2Gi }
+  extraEnv: []
+
+controlPlane:
+  replicas: 1                         # 1 or 2; rate limits are per process, so 2 doubles the allowance
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 512Mi }
+  extraEnv: []
+
+web:
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { cpu: 250m, memory: 128Mi }
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
