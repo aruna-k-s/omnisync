@@ -171,6 +171,13 @@ describe("applyResolutions", () => {
   it("refuses a path through something that is not a map", () => {
     const d = yjsEngine.create(1);
     d.mapSet([], "tags", ["a"]);
-    expect(() => applyResolutions(d, [{ path: "/tags/x", value: 1 }])).toThrow(BranchError);
+    let err: unknown;
+    try {
+      applyResolutions(d, [{ path: "/tags/x", value: 1 }]);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(BranchError);
+    expect((err as BranchError).code).toBe("bad_path");
   });
 });
