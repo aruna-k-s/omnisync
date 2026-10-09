@@ -110,9 +110,9 @@ export const updateKey = (u: Uint8Array): string => Buffer.from(u).toString("bas
 
 /**
  * One cold sync as a client would do it, with a decoder that accepts large frames: opens the socket, sends SYNC_1 for an
- * empty document, waits for SYNC_2 and applies it to a fresh replica. The stock `GatewayClient` decodes with the default
- * 1 MiB payload cap and silently drops a larger SYNC_2 (ticket L1 in docs/specs/load.md), so a 10 MB document can only
- * be timed this way. The clock starts before the socket is opened and stops after the replica has applied the state.
+ * empty document, waits for SYNC_2 and applies it to a fresh replica. The stock `GatewayClient` used to decode with the
+ * default 1 MiB payload cap and silently drop a larger SYNC_2 (ticket L1, fixed in docs/specs/large-sync.md); this
+ * measures the gateway's side of the load without the client's decoding in it. The clock starts before the socket is opened and stops after the replica has applied the state.
  */
 export async function coldSync(opts: { url: string; docId: string; actor: number; engine: EngineName; timeoutMs: number }): Promise<{ ms: number; textLength: number; payloadBytes: number }> {
   const t0 = performance.now();

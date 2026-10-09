@@ -1,6 +1,6 @@
 import { decodeCertificate, encodeAuthResponseWith } from "@omnisync/crypto";
 import type { EngineDoc, Json, Path, SyncEngine } from "@omnisync/engine";
-import { FrameType, decodeFrame, encodeFrame, signUpdateWith } from "@omnisync/protocol";
+import { FrameType, decodeFrame, describeDecodeError, encodeFrame, resolveInboundCap, signUpdateWith } from "@omnisync/protocol";
 import { backoffDelay } from "./backoff.js";
 import { Batcher } from "./batcher.js";
 import type { DeviceKey } from "./keys.js";
@@ -43,6 +43,14 @@ export interface DocumentOptions {
   flushOnPageHide?: boolean;
   /** Start connecting at once (default true). */
   autoConnect?: boolean;
+  /**
+   * Largest frame accepted from the gateway, in bytes (default and maximum 64 MiB). The first sync carries the whole
+   * document, so a cap below its size makes it unopenable; such a frame is dropped and reported (`decodeErrors`,
+   * `onDecodeError`). A browser buffers a frame this large before the SDK sees it.
+   */
+  maxInboundBytes?: number;
+  /** Called with a short description (code and sizes, never bytes) each time a received frame is dropped. */
+  onDecodeError?: (error: string) => void;
 }
 
 export type ChangeSource = "local" | "remote";
@@ -126,9 +134,14 @@ export class SyncDocument {
   #paused = false;
   #fault: string | undefined;
   #loaded = false;
+  readonly #inboundCap: number;
+  /** Frames received from the gateway and dropped because they could not be decoded or were over `maxInboundBytes`. */
+  decodeErrors = 0;
+  lastDecodeError: string | undefined;
   #hide: (() => void) | undefined;
 
   private constructor(opts: DocumentOptions) {
+    this.#inboundCap = resolveInboundCap(opts.maxInboundBytes);
     this.#o = opts;
     this.#clock = opts.clock ?? Date.now;
     this.#random = opts.random ?? Math.random;
@@ -429,11 +442,24 @@ export class SyncDocument {
     }, delay);
   }
 
+  /** A frame from the gateway that cannot be used is dropped, never thrown past this boundary, but it is counted and named. */
+  #dropped(e: unknown): void {
+    const what = describeDecodeError(e);
+    this.decodeErrors++;
+    this.lastDecodeError = what;
+    try {
+      this.#o.onDecodeError?.(what);
+    } catch {
+      // a faulty observer must not break the connection
+    }
+  }
+
   async #onMessage(ws: WebSocket, bytes: Uint8Array): Promise<void> {
     let frame;
     try {
-      frame = decodeFrame(bytes);
-    } catch {
+      frame = decodeFrame(bytes, { maxPayloadBytes: this.#inboundCap });
+    } catch (e) {
+      this.#dropped(e);
       return;
     }
     switch (frame.type) {

@@ -265,7 +265,7 @@ export interface ColdLoadResult {
   textLength: number;
   /** Socket open to the state applied on a fresh replica, with a decoder that accepts large frames (see `coldSync`). */
   clientMs: Summary;
-  /** Whether the stock client (`GatewayClient`) can load this document at all. Ticket L1: it cannot above 1 MiB. */
+  /** Whether the stock client (`GatewayClient`) can load this document at all. Ticket L1: it could not above 1 MiB until the inbound cap was raised (docs/specs/large-sync.md). */
   stockClient: { syncs: boolean; detail: string };
   /** How the gateway loaded the room in the last round: from which snapshot version, replaying how many updates after it. */
   loadedFrom: { snapshotVersion: number; replayed: number } | undefined;
@@ -341,8 +341,10 @@ export async function coldLoad(world: World, cfg: ColdLoadConfig, log: (message:
   // Can the stock client load it? One attempt, no retries.
   const stock = await GatewayClient.connect({ url: gw.url, docId, actor: 3, key: world.keys[1]!, engine: cfg.engine, reconnect: false, syncTimeoutMs: 8000 }).then(
     async (c) => {
+      const got = c.doc.getText().length;
       await c.close();
-      return { syncs: true, detail: "synced" };
+      // "Syncs" means it holds the whole document, not merely that the handshake finished.
+      return got === expected ? { syncs: true, detail: "synced" } : { syncs: false, detail: `synced ${got} characters, expected ${expected}` };
     },
     (e: Error) => ({ syncs: false, detail: e.message }),
   );
@@ -380,7 +382,7 @@ export interface StormConfig {
   liveEditsPerSecond: number;
   /** Give up on the storm after this long. */
   limitMs: number;
-  /** Size of the document everyone has to catch up on, in KiB (0: a few bytes). The stock client cannot load more than 1 MiB (ticket L1). */
+  /** Size of the document everyone has to catch up on, in KiB (0: a few bytes). Above 1 MiB needs the inbound cap of docs/specs/large-sync.md (ticket L1). */
   seedKb: number;
 }
 

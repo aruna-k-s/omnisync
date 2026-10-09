@@ -43,7 +43,7 @@ export function parseLoadConfig(env: Readonly<Record<string, string | undefined>
     stormClients: whole(env, "LOAD_STORM_CLIENTS", 200, 2, 2000),
     partitionS: whole(env, "LOAD_PARTITION_S", 10, 1, 3600),
     offlineEdits: whole(env, "LOAD_OFFLINE_EDITS", 5, 1, 1000),
-    stormDocKb: whole(env, "LOAD_STORM_DOC_KB", 800, 1, 1000),
+    stormDocKb: whole(env, "LOAD_STORM_DOC_KB", 800, 1, 16000),
     engine: engine as EngineName,
     only: only as ScenarioName[],
     databaseUrl: env["BENCH_DATABASE_URL"] || env["OMNISYNC_TEST_DATABASE_URL"] || undefined,

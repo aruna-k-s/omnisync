@@ -117,19 +117,17 @@ describe("cold load", () => {
     expect(r.firstAfterProcessStartMs).toBeUndefined(); // the in-memory store cannot outlive its process
   }, 120_000);
 
-  // Ticket L1 (docs/specs/load.md): GatewayClient decodes frames with the default 1 MiB cap, so it silently drops a larger
-  // SYNC_2 and can never open a bigger document. This test records the defect; when the client is fixed it fails, and
-  // the fix is to flip the expectation and close the ticket.
   it("refuses a load that returns a different document from the one written", async () => {
     await expect(
       coldLoad(await world(2), { engine: "yjs", snapshotBytes: 100_000, chunks: 100, rounds: 1, seed: 3 }, () => {}, { afterFill: (c) => c.delete(0, 1) }),
     ).rejects.toThrow(/cold load returned \d+ characters, expected 100000/);
   }, 120_000);
 
-  it("documents the known limit: the stock client cannot load a document over 1 MiB, while the gateway serves it", async () => {
+  // Ticket L1 (docs/specs/large-sync.md): the stock client used to drop any SYNC_2 over 1 MiB and could never open the document.
+  it("the stock client loads a document over 1 MiB, in full (ticket L1 fixed)", async () => {
     const r = await coldLoad(await world(2), { engine: "yjs", snapshotBytes: 2 * 1024 * 1024, chunks: 100, rounds: 1, seed: 3 });
     expect(r.textLength).toBe(Math.ceil((2 * 1024 * 1024) / 100) * 100);
-    expect(r.stockClient.syncs).toBe(false);
+    expect(r.stockClient).toEqual({ syncs: true, detail: "synced" });
     expect(r.clientMs.count).toBe(1);
   }, 120_000);
 

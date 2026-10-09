@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 import { getEngine, type EngineDoc, type EngineName, type Json, type Path } from "@omnisync/engine";
 import { encodeAuthResponse } from "@omnisync/crypto";
-import { FrameType, decodeFrame, encodeFrame, signUpdate, type KeyPair } from "@omnisync/protocol";
+import { FrameType, decodeFrame, describeDecodeError, encodeFrame, resolveInboundCap, signUpdate, type KeyPair } from "@omnisync/protocol";
 import { ROLES, type Role } from "@omnisync/store";
 
 /**
@@ -37,6 +37,14 @@ export interface ClientOptions {
   certificate?: Uint8Array;
   /** Wall clock used to stamp edits (signed into each UPDATE). Injectable for tests. */
   clock?: () => number;
+  /**
+   * Largest frame accepted from the gateway, in bytes (default and maximum 64 MiB). The first sync carries the whole
+   * document, so a cap below the document's size makes it unopenable; such a frame is dropped and reported
+   * (`decodeErrors`, `onDecodeError`). Edits the client sends are capped by the gateway at 1 MiB regardless.
+   */
+  maxInboundBytes?: number;
+  /** Called with a short description (code and sizes, never bytes) each time a received frame is dropped. */
+  onDecodeError?: (error: string) => void;
 }
 
 interface Waiter {
@@ -60,6 +68,9 @@ export class GatewayClient {
   /** Delays chosen by the backoff so far, for tests and diagnostics. */
   readonly delays: number[] = [];
   reconnects = 0;
+  /** Frames received from the gateway and dropped because they could not be decoded or were over `maxInboundBytes`. */
+  decodeErrors = 0;
+  lastDecodeError: string | undefined;
   /** Role and mode the gateway granted on the current connection (certificate mode only). */
   role: Role | undefined;
   mode: "full" | "upload_only" = "full";
@@ -69,6 +80,7 @@ export class GatewayClient {
   serverSkewMs = 0;
 
   readonly #opts: ClientOptions;
+  readonly #inboundCap: number;
   readonly #sessionId: number;
   readonly #outbox = new Map<number, Queued>();
   readonly #random: () => number;
@@ -85,6 +97,7 @@ export class GatewayClient {
   #onRemote: ((update: Uint8Array) => void) | undefined;
 
   private constructor(opts: ClientOptions) {
+    this.#inboundCap = resolveInboundCap(opts.maxInboundBytes);
     this.#opts = opts;
     this.#sessionId = opts.sessionId ?? Math.floor(Math.random() * 2 ** 31);
     this.#random = opts.random ?? Math.random;
@@ -210,7 +223,7 @@ export class GatewayClient {
       if (!this.#closed && this.#opts.reconnect !== false) this.#scheduleReconnect();
       else if (!this.#synced) {
         // Nobody will retry for the caller: say why the handshake ended instead of waiting forever.
-        const err = new Error(`connection closed before sync: ${this.errors.at(-1) ?? "no reason given"}`);
+        const err = new Error(`connection closed before sync: ${this.errors.at(-1) ?? (this.lastDecodeError !== undefined ? `dropped frame (${this.decodeErrors} dropped, last: ${this.lastDecodeError})` : "no reason given")}`);
         for (const w of this.#syncWaiters.splice(0)) w.reject(err);
       }
     });
@@ -247,11 +260,24 @@ export class GatewayClient {
     }, delay);
   }
 
+  /** A frame from the gateway that cannot be used is dropped, never thrown past this boundary, but it is counted and named. */
+  #dropped(e: unknown): void {
+    const what = describeDecodeError(e);
+    this.decodeErrors++;
+    this.lastDecodeError = what;
+    try {
+      this.#opts.onDecodeError?.(what);
+    } catch {
+      // a faulty observer must not break the connection
+    }
+  }
+
   #onMessage(bytes: Uint8Array): void {
     let frame;
     try {
-      frame = decodeFrame(bytes);
-    } catch {
+      frame = decodeFrame(bytes, { maxPayloadBytes: this.#inboundCap });
+    } catch (e) {
+      this.#dropped(e);
       return;
     }
     switch (frame.type) {
