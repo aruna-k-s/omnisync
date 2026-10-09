@@ -342,6 +342,18 @@ importers:
         specifier: ^8.18.2
         version: 8.18.2
 
+  packages/branches:
+    devDependencies:
+      '@omnisync/config':
+        specifier: workspace:*
+        version: link:../config
+      '@omnisync/engine':
+        specifier: workspace:*
+        version: link:../engine
+      fast-check:
+        specifier: ^4.10.2
+        version: 4.10.2
+
   packages/config: {}
 
   packages/crypto:
