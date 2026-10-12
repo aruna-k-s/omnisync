@@ -343,13 +343,14 @@ importers:
         version: 8.18.2
 
   packages/branches:
+    dependencies:
+      '@omnisync/engine':
+        specifier: workspace:*
+        version: link:../engine
     devDependencies:
       '@omnisync/config':
         specifier: workspace:*
         version: link:../config
-      '@omnisync/engine':
-        specifier: workspace:*
-        version: link:../engine
       fast-check:
         specifier: ^4.10.2
         version: 4.10.2

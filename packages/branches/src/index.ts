@@ -1,2 +1,5 @@
-// Shadow-Branch prototype (docs/specs/shadow-branch.md). Intentionally empty until the spec is accepted.
-export {};
+export * from "./classify.js";
+export * from "./branch.js";
+export * from "./merge.js";
+export * from "./audit.js";
+export * from "./store.js";

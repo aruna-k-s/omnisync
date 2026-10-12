@@ -1,6 +1,6 @@
 # Spec: Shadow-Branch prototype (Phase 1, week 11)
 
-**Status: draft for your review. Nothing in this spec is built.** The tests that accompany it (`packages/branches/test/`) are written and fail, on purpose, until you have read this and answered the decisions at the end.
+**Status: decisions D12 to D14 accepted (12 October). The pure-logic library `packages/branches` is built to this spec; the Agent SDK, the demo and the gateway/control-plane wiring are not.**
 
 Product definition: the "Shadow-Branch AI collaboration" section of the plan. An agent edits its own fork of a document; nothing it writes reaches the main document until a human approves a reviewed diff. Phase 1 ships a **scripted prototype for demos**; the production protocol is Phase 3 (and only when a design partner asks). This spec says what the prototype is, what it deliberately is not, and what it must never do.
 
@@ -90,8 +90,20 @@ New workspace package `@omnisync/branches` with `@omnisync/engine` (workspace) a
 
 None touched by the prototype as specified: no gateway change, no migration, no control-plane change, no `frame.ts` or `signing.ts` change. The things this design chooses **not** to do because they would touch protected paths are listed above (Option B, a branches table in a migration, control-plane endpoints, a gateway-side refusal at the merge permission). If you choose Option B, or want the branch record in PostgreSQL, those become 24-hour reviews.
 
-## Decisions I need from you
+## Decisions (answered)
 
-- **D12, merge model:** Option A for the prototype (human-signed replay plus an audit-trail merge record, two ledgers and a record) with Option B as the Phase 3 target, or Option B now (protocol change, protected review, longer).
-- **D13, where the branch record lives:** the prototype keeps it behind a small storage interface with in-memory and file implementations, and writes events to the existing audit trail. A PostgreSQL table (migration `005`, protected) can follow in Phase 3. Agree?
-- **D14, text granularity:** whole-text overlap (conservative, simple) for the prototype, finer ranges later. Agree?
+- **D12, merge model:** Option A, human-signed replay plus an audit-trail merge record. Option B (a merge frame) is the Phase 3 target.
+- **D13, where the branch record lives:** behind a `BranchStore` interface with in-memory and file implementations; events go to the existing audit trail. No migration. A PostgreSQL table can follow in Phase 3.
+- **D14, text granularity:** whole text.
+
+## As built (`packages/branches`, 110 tests)
+
+- `classifyChanges`, the state machine (`fork`, `propose`, `returnToAgent`, `reject`, `approve`, `tick`, `freeze`), `planMerge`, `applyResolutions`.
+- **Reviewed head.** `propose` can record `branchHeadSeq`, the branch document's head when the diff was computed. `planMerge` then merges entries up to that seq and no further, and refuses entries that stop short of it. Without this, an agent could keep writing to its branch while the reviewer looked, and the merge would carry edits nobody saw. A caller that omits it merges every entry given; the caller that wires this to the gateway must always pass it.
+- **Versioned store.** Every transition appends to `history`, whose length is the record's version; `save` accepts only the next version (`conflict` otherwise), so two reviewers cannot both decide on the same proposal. The file store names files from the document id by base64url (never as a path), writes owner-only files and replaces them atomically.
+- **Audit.** `auditForTransition` and `auditForMerge` return objects shaped like the identity store's `AuditInput`. They carry ids, counts and hashes only: no summaries, no document text and no path names.
+- **Mutation checks.** 118 mutants over classification, state machine, approval rules, merge plan, resolutions, store and audit. 28 survived the first run; the tests that close them are in `test/closing.test.ts` (and one redundant copy in `planMerge` was removed because its mutant was equivalent). None survive.
+
+## Still to build
+
+The Agent SDK wrapper over the Node client, the scripted demo (fork, agent edits, propose, human merge, `omnisync verify` on both ledgers), wiring the library to the identity store (agent principal and its grant on the branch document, `appendAudit`), and branch metrics.

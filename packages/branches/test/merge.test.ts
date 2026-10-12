@@ -149,6 +149,33 @@ describe("planMerge from real documents", () => {
   });
 });
 
+describe("planMerge and the reviewed head", () => {
+  function reviewed(headSeq: number | undefined) {
+    const { main, base, branch, entries } = scenario();
+    const rec = fork({ id: "b1", mainDocId: "doc", agentId: "agent-1", forkedBy: alice, purpose: "p", base: { mainHeadSeq: 10, mainHeadHash: hash(7), stateVector: base.encodeStateVector() }, nowMs: T0 });
+    const changes = classifyChanges({ base: view(base), branch: view(branch), main: view(main) });
+    const p = propose(rec, { by: agentActor, summary: "s", changes, nowMs: T0 + 1, ...(headSeq !== undefined ? { branchHeadSeq: headSeq } : {}) });
+    return { merged: approve(p, { by: alice, resolutions: {}, nowMs: T0 + 2 }), entries };
+  }
+
+  it("merges only what the reviewer saw: entries the agent added after the proposal are left out", () => {
+    const { merged, entries } = reviewed(3); // the diff was computed when the branch head was seq 3
+    const plan = planMerge(merged, entries); // the agent has since made seq 4
+    expect(plan.record).toMatchObject({ fromSeq: 2, toSeq: 3, entryCount: 2 });
+    expect(plan.updates).toEqual(entries.slice(0, 2).map((e) => e.payload));
+  });
+
+  it("refuses when the entries given stop short of the reviewed head", () => {
+    const { merged, entries } = reviewed(4);
+    expect(() => planMerge(merged, entries.slice(0, 2))).toThrow(/reviewed head is 4/);
+  });
+
+  it("takes every entry when the proposal did not record a head", () => {
+    const { merged, entries } = reviewed(undefined);
+    expect(planMerge(merged, entries).record.toSeq).toBe(4);
+  });
+});
+
 describe("applyResolutions", () => {
   it("sets a nested value, removes a key when the value is undefined (the reviewer chose removal), and replaces the text", () => {
     const d = yjsEngine.create(1);
