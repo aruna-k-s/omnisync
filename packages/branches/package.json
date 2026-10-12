@@ -1,0 +1,28 @@
+{
+  "name": "@omnisync/branches",
+  "version": "0.1.0",
+  "description": "Shadow-Branch logic: change classification, branch state machine, approval rules and merge plan (pure, no I/O)",
+  "license": "UNLICENSED",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@omnisync/config": "workspace:*",
+    "fast-check": "^4.10.2"
+  },
+  "dependencies": {
+    "@omnisync/engine": "workspace:*"
+  }
+}

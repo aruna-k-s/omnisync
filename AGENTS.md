@@ -48,6 +48,7 @@ packages/crypto/     Ed25519 session certificates, AUTH possession proof, enroll
 packages/verifier/   offline ledger verifier and the `omnisync` command (Apache-2.0). Reads an export and public keys, never a database
 packages/protocol/   frames, varints, signed envelopes, keyring, test vectors (Apache-2.0)
 packages/engine/     engine interface (text + JSON tree of maps and arrays) + Yjs, Automerge, Loro adapters. `@omnisync/engine/yjs` is a subpath so a browser bundle can omit the other two
+packages/branches/   Shadow-Branch logic, pure and without I/O: change classification, branch state machine, approval rules, merge plan, branch store (memory, file) and audit entries (`docs/specs/shadow-branch.md`). Not wired to the gateway yet
 packages/telemetry/  metrics and traces (OpenTelemetry API, Prometheus endpoint on its own port): observer-only, closed label sets, off unless configured. `@omnisync/telemetry/testing` reads a real scrape back as text
 packages/store/      hash-chained update log, checkpoints, identity store (principals, certificates with their signed bytes, grants, document registry, audit), snapshot metadata (PostgreSQL + in-memory), object storage (filesystem, memory, and the S3 adapter with Object Lock at `@omnisync/store/s3`), SQL migrations, fault injection (`@omnisync/store/testing`)
 packages/sdk/        browser and Node SDK (Apache-2.0): device key (WebCrypto, non-extractable), outbox (memory, IndexedDB), batching, SyncDocument, enrollment. Test page and Playwright test under browser/ and test/browser.test.ts
